@@ -1,44 +1,38 @@
-# Personal Finance Management Suite
+# Finansçım - Kişisel Finans Yönetim Sistemi
 
-WhatDouBuy is a comprehensive finance management application consisting of a Python desktop/backend component and a modern Next.js mobile application (powered by Capacitor).
+**Finansçım**, Python tabanlı yönetim araçları ve Capacitor destekli modern bir Next.js mobil uygulamasından oluşan kapsamlı bir finans yönetim paketidir.
 
-## 🚀 Features
+## 🚀 Öne Çıkan Özellikler
 
-- **Asset Management:** Track your assets in multiple currencies (TRY, USD).
-- **Real-time Conversion:** Automatic USD to TRY conversion using live exchange rates.
-- **Transaction History:** Record and categorize your income and expenses.
-- **Debt Tracking:** Manage your debts and receivables with due dates.
-- **Native Mobile Experience:** Built with Next.js and Capacitor for a premium native feel.
-- **Cross-Platform:** Python-based administration tools and React-based mobile UI.
+- **Varlık Yönetimi:** Nakit ve banka hesaplarınızı birden fazla para birimiyle (TRY, USD) takip edin.
+- **Canlı Kur Dönüşümü:** USD varlıklarınız için otomatik canlı döviz kuru entegrasyonu.
+- **İşlem Geçmişi:** Gelir ve giderlerinizi kategorize ederek kaydedin.
+- **Borç/Alacak Takibi:** Borçlarınızı ve alacaklarınızı vadeleriyle birlikte yönetin.
+- **Premium Mobil Deneyim:** Next.js ve Capacitor ile akıcı ve şık native uygulama deneyimi.
 
-## 🛠 Tech Stack
+## 🆕 Son Güncellemeler (v1.1.0)
+Uygulama genelinde yapılan büyük iyileştirmeler, hata düzeltmeleri ve yeni eklenen özellikler için lütfen [CHANGELOG.md](./CHANGELOG.md) dosyasını inceleyin.
 
-- **Mobile:** Next.js (React), Lucide Icons, Capacitor (for Android).
-- **Styling:** Vanilla CSS with a premium dark-mode design system.
-- **Database:** Firebase Firestore for real-time data sync.
-- **Backend/Tools:** Python (Firebase Admin SDK).
+## 🛠 Teknoloji Yığını
 
-## 📁 Project Structure
+- **Mobil:** Next.js (React), Lucide Icons, Capacitor (Android).
+- **Stil:** Özel karanlık tema (Vanilla CSS).
+- **Veritabanı:** Firebase Firestore (Gerçek zamanlı senkronizasyon).
+- **Araçlar:** Python (Firebase Admin SDK).
 
-- `/mobile`: Next.js web app and Android project files.
-- `finance_app.py`: Main Python logic for data management.
-- `add_expenses.py`: Utility script for bulk adding transactions.
+## 📁 Proje Yapıları
 
-## ⚙️ Setup
+- `/mobile`: Next.js web uygulaması ve Android proje dosyaları.
+- `finance_app.py`: Veri yönetimi için ana Python mantığı.
+- `add_expenses.py`: Toplu işlem ekleme yardımcı aracı.
 
-### Mobile App
-1. Navigate to `/mobile`
-2. Run `npm install`
-3. Start development: `npm run dev`
-4. Build for Android: `npm run build && npx cap sync android`
+## ⚙️ Kurulum ve Çalıştırma
 
-### Python Tools
-1. Install dependencies: `pip install firebase-admin`
-2. Ensure `serviceAccountKey.json` is present in the root (excluded from Git).
-3. Run `python finance_app.py`
-
-## 🔒 Security Note
-Sensitve files like `serviceAccountKey.json` and internal Firebase environment variables are ignored in this repository. Ensure you provide your own configuration to run the project.
+### Mobil Uygulama
+1. `/mobile` dizinine gidin.
+2. `npm install` ile paketleri kurun.
+3. Geliştirme modu: `npm run dev`
+4. Telefonuna yükle: `./deploy-to-phone.ps1` (ADB gereklidir)
 
 ---
-Developed with ❤️ for financial freedom.
+❤️ Finansal özgürlüğünüz için geliştirildi.
