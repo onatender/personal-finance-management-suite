@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Sensitive Data
+serviceAccountKey.json
+*.pem
+.env*
+
+# Generated Binaries
+*.apk
+mobile/android/app/build/
+mobile/android/app/debug/
+mobile/android/app/release/
+
+# Dependencies
+node_modules/
+mobile/node_modules/
+
+# Next.js
+.next/
+mobile/.next/
+out/
+mobile/out/
+
+# IDE & Misc
+.vscode/
+.idea/
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
