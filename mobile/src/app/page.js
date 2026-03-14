@@ -253,12 +253,14 @@ export default function UnifiedApp() {
 
       <main className="main-content">
         <div className="scroll-area">
-          <header style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'32px', paddingTop:'12px'}}>
+          <header style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'32px', paddingTop:'16px'}}>
             <div>
               <h1 style={{fontSize:'26px', fontWeight:900, lineHeight:'1.2'}}>Finansçım</h1>
-              <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:800, letterSpacing:'1px', marginTop:'2px'}}>{activeTab.toUpperCase()}</p>
+              <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:800, letterSpacing:'1px', marginTop:'2px'}}>
+                {activeTab === 'home' ? 'ÖZET' : activeTab === 'wallet' ? 'VARLIKLARIM' : activeTab === 'history' ? 'GEÇMİŞ' : 'BORÇLAR'}
+              </p>
             </div>
-            <button className="glass icon-circle" style={{marginTop:'4px'}}><Settings size={20}/></button>
+            <button className="glass icon-circle" style={{marginTop:'4px'}}><Settings size={20} color="var(--text-dim)"/></button>
           </header>
 
           {activeTab === 'home' && (
@@ -396,7 +398,7 @@ export default function UnifiedApp() {
             <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
                 <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni İşlem Ekle</h3>
-                <button onClick={() => setIsAddModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20}/></button>
+                <button onClick={() => setIsAddModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
               </div>
               
               <form onSubmit={handleAddTransaction} className="flex-col gap-4">
@@ -440,7 +442,7 @@ export default function UnifiedApp() {
             <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
                 <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni Hesap/Varlık</h3>
-                <button onClick={() => setIsAssetModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20}/></button>
+                <button onClick={() => setIsAssetModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
               </div>
               <form onSubmit={handleAddAsset} className="flex-col gap-4">
                 <div className="input-group">
@@ -472,7 +474,7 @@ export default function UnifiedApp() {
             <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
                 <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni Borç veya Alacak</h3>
-                <button onClick={() => setIsDebtModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20}/></button>
+                <button onClick={() => setIsDebtModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
               </div>
               <form onSubmit={handleAddDebt} className="flex-col gap-4">
                 <div className="input-group">
@@ -508,7 +510,7 @@ export default function UnifiedApp() {
             <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
                 <h3 style={{fontSize:'20px', fontWeight:900}}>Düzenle</h3>
-                <button onClick={() => setEditingItem(null)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20}/></button>
+                <button onClick={() => setEditingItem(null)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
               </div>
               <form onSubmit={handleEditItem} className="flex-col gap-4">
                 {editingItem.ad !== undefined && (
@@ -527,6 +529,32 @@ export default function UnifiedApp() {
                   <div className="input-group">
                     <label>İsim</label>
                     <input className="form-input" value={editingItem.isim} onChange={e => setEditingItem({...editingItem, isim: e.target.value})} />
+                  </div>
+                )}
+                {editingItem.tür !== undefined && (
+                  <div className="input-group">
+                    <label>Tür</label>
+                    <select className="form-select" value={editingItem.tür} onChange={e => setEditingItem({...editingItem, tür: e.target.value})}>
+                      <option>Gider</option>
+                      <option>Gelir</option>
+                    </select>
+                  </div>
+                )}
+                {editingItem.tip !== undefined && (
+                  <div className="input-group">
+                    <label>Tür</label>
+                    <select className="form-select" value={editingItem.tip} onChange={e => setEditingItem({...editingItem, tip: e.target.value})}>
+                      <option>Borç</option>
+                      <option>Alacak</option>
+                    </select>
+                  </div>
+                )}
+                {editingItem.kategori !== undefined && (
+                  <div className="input-group">
+                    <label>Kategori</label>
+                    <select className="form-select" value={editingItem.kategori} onChange={e => setEditingItem({...editingItem, kategori: e.target.value})}>
+                      {["Mutfak", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
+                    </select>
                   </div>
                 )}
                 <div className="input-group">
