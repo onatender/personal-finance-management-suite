@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.whatdoubuy.app',
-  appName: 'WhatDouBuy',
+  appName: 'Finansçım',
   webDir: 'out'
 };
 

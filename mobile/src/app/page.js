@@ -39,13 +39,23 @@ export default function UnifiedApp() {
   const [menuOpenId, setMenuOpenId] = useState(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
+  const [isAssetModalOpen, setIsAssetModalOpen] = useState(false);
+  const [isDebtModalOpen, setIsDebtModalOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null); // { col, id, name }
   
   // Data State
   const [assets, setAssets] = useState([]);
   const [debts, setDebts] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [usdRate, setUsdRate] = useState(0);
-  const [stats, setStats] = useState({ balance: '0.00', income: '0.00', expense: '0.00' });
+  const [stats, setStats] = useState({ 
+    balance: '0.00', 
+    income: '0.00', 
+    expense: '0.00',
+    totalAssets: '0.00',
+    totalDebts: '0.00',
+    totalReceivables: '0.00'
+  });
 
   // Add Transaction Form State
   const [newTx, setNewTx] = useState({
@@ -54,6 +64,19 @@ export default function UnifiedApp() {
     tür: 'Gider',
     kategori: 'Mutfak',
     varlık: ''
+  });
+
+  const [newAsset, setNewAsset] = useState({
+    ad: '',
+    bakiye: '',
+    birim: 'TRY'
+  });
+
+  const [newDebt, setNewDebt] = useState({
+    isim: '',
+    miktar: '',
+    tip: 'Borç',
+    vade: ''
   });
 
   useEffect(() => {
@@ -89,6 +112,17 @@ export default function UnifiedApp() {
     return () => { unsubAssets(); unsubDebts(); unsubTx(); };
   }, []);
 
+  // Standardize 'TL' to 'TRY' in database
+  useEffect(() => {
+    assets.forEach(async (a) => {
+      if (a.birim === "TL") {
+        try {
+          await updateDoc(doc(db, "varliklar", a.id), { birim: "TRY" });
+        } catch (err) { console.error("Standardization error:", err); }
+      }
+    });
+  }, [assets]);
+
   useEffect(() => {
     let totalTRY = 0;
     assets.forEach(a => {
@@ -98,17 +132,24 @@ export default function UnifiedApp() {
 
     const inc = transactions.filter(t => t.tür === 'Gelir').reduce((s, t) => s + t.fiyat, 0);
     const exp = transactions.filter(t => t.tür === 'Gider').reduce((s, t) => s + t.fiyat, 0);
+    const totalBorc = debts.filter(d => d.tip === 'Borç').reduce((s, d) => s + parseFloat(d.miktar || 0), 0);
+    const totalAlacak = debts.filter(d => d.tip === 'Alacak').reduce((s, d) => s + parseFloat(d.miktar || 0), 0);
+    
+    const netWorth = totalTRY + totalAlacak - totalBorc;
 
     setStats({
-      balance: totalTRY.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      balance: netWorth.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
       income: inc.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
-      expense: exp.toLocaleString("tr-TR", { minimumFractionDigits: 2 })
+      expense: exp.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      totalAssets: totalTRY.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      totalDebts: totalBorc.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      totalReceivables: totalAlacak.toLocaleString("tr-TR", { minimumFractionDigits: 2 })
     });
 
     if (assets.length > 0 && !newTx.varlık) {
       setNewTx(prev => ({ ...prev, varlık: assets[0].ad }));
     }
-  }, [assets, transactions, usdRate]);
+  }, [assets, transactions, debts, usdRate]);
 
   const handleAddTransaction = async (e) => {
     e.preventDefault();
@@ -137,10 +178,60 @@ export default function UnifiedApp() {
     }
   };
 
+  const handleAddAsset = async (e) => {
+    e.preventDefault();
+    if (!newAsset.ad || !newAsset.bakiye) return;
+    try {
+      await addDoc(collection(db, "varliklar"), {
+        ...newAsset,
+        bakiye: parseFloat(newAsset.bakiye)
+      });
+      setNewAsset({ ad: '', bakiye: '', birim: 'TRY' });
+      setIsAssetModalOpen(false);
+    } catch (err) { alert("Hata: " + err.message); }
+  };
+
+  const handleAddDebt = async (e) => {
+    e.preventDefault();
+    if (!newDebt.isim || !newDebt.miktar) return;
+    try {
+      await addDoc(collection(db, "borclar"), {
+        ...newDebt,
+        miktar: parseFloat(newDebt.miktar)
+      });
+      setNewDebt({ isim: '', miktar: '', tip: 'Borç', vade: '' });
+      setIsDebtModalOpen(false);
+    } catch (err) { alert("Hata: " + err.message); }
+  };
+
+  const handleEditItem = async (e) => {
+    e.preventDefault();
+    const { col, id, ...data } = editingItem;
+    try {
+      await updateDoc(doc(db, col, id), {
+        ...data,
+        // Convert numbers if necessary
+        ...(data.fiyat !== undefined && { fiyat: parseFloat(data.fiyat) }),
+        ...(data.bakiye !== undefined && { bakiye: parseFloat(data.bakiye) }),
+        ...(data.miktar !== undefined && { miktar: parseFloat(data.miktar) })
+      });
+      setEditingItem(null);
+    } catch (err) { alert("Hata: " + err.message); }
+  };
+
   const deleteItem = async (col, id) => {
-    if (confirm("Silmek istediğinizden emin misiniz?")) {
-      await deleteDoc(doc(db, col, id));
-      setMenuOpenId(null);
+    const item = [...assets, ...transactions, ...debts].find(x => x.id === id);
+    setConfirmDelete({ col, id, name: item?.ad || item?.açıklama || item?.isim || 'bu öğe' });
+    setMenuOpenId(null);
+  };
+
+  const executeDelete = async () => {
+    if (!confirmDelete) return;
+    try {
+      await deleteDoc(doc(db, confirmDelete.col, confirmDelete.id));
+      setConfirmDelete(null);
+    } catch (err) {
+      alert("Hata: " + err.message);
     }
   };
 
@@ -151,7 +242,7 @@ export default function UnifiedApp() {
       
       {/* Sidebar for Desktop */}
       <aside className="sidebar">
-        <h1 style={{fontSize:'24px', fontWeight:900}}>WhatDouBuy</h1>
+        <h1 style={{fontSize:'24px', fontWeight:900}}>Finansçım</h1>
         <nav className="flex-col gap-4">
           <SidebarItem active={activeTab==='home'} onClick={()=>setActiveTab('home')} icon={<LayoutGrid/>} label="Ana Panel"/>
           <SidebarItem active={activeTab==='wallet'} onClick={()=>setActiveTab('wallet')} icon={<CardIcon/>} label="Varlıklar"/>
@@ -162,12 +253,12 @@ export default function UnifiedApp() {
 
       <main className="main-content">
         <div className="scroll-area">
-          <header style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'32px'}}>
+          <header style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'32px', paddingTop:'12px'}}>
             <div>
-              <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:800, letterSpacing:'1px'}}>{activeTab.toUpperCase()}</p>
-              <h1 style={{fontSize:'26px', fontWeight:900}}>WhatDouBuy</h1>
+              <h1 style={{fontSize:'26px', fontWeight:900, lineHeight:'1.2'}}>Finansçım</h1>
+              <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:800, letterSpacing:'1px', marginTop:'2px'}}>{activeTab.toUpperCase()}</p>
             </div>
-            <button className="glass icon-circle"><Settings size={20}/></button>
+            <button className="glass icon-circle" style={{marginTop:'4px'}}><Settings size={20}/></button>
           </header>
 
           {activeTab === 'home' && (
@@ -210,6 +301,7 @@ export default function UnifiedApp() {
                       tx={tx} 
                       menuOpen={menuOpenId === tx.id}
                       onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === tx.id ? null : tx.id) }} 
+                      onEdit={() => setEditingItem({ col: 'harcamalar', ...tx })}
                       onDelete={() => deleteItem('harcamalar', tx.id)}
                     />
                   ))}
@@ -219,16 +311,45 @@ export default function UnifiedApp() {
           )}
 
           {activeTab === 'wallet' && (
-            <div className="animate-slide-up list-grid">
-              {assets.map(a => (
-                <AssetItem 
-                  key={a.id} 
-                  asset={a} 
-                  menuOpen={menuOpenId === a.id}
-                  onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === a.id ? null : a.id) }}
-                  onDelete={() => deleteItem('varliklar', a.id)}
-                />
-              ))}
+            <div className="animate-slide-up">
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
+                <h3 style={{fontSize:'18px', fontWeight:900}}>VARLIKLARIM</h3>
+                <button className="btn-text" onClick={() => setIsAssetModalOpen(true)}>+ YENİ HESAP</button>
+              </div>
+              <div className="glass" style={{padding:'24px', marginBottom:'24px', background: 'linear-gradient(145deg, #1e1e2d 0%, #111119 100%)'}}>
+                <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'8px', marginBottom:'20px'}}>
+                  <div>
+                    <p style={{color:'var(--text-dim)', fontSize:'9px', fontWeight:800, textTransform:'uppercase'}}>Varlık</p>
+                    <h3 style={{fontSize:'15px', fontWeight:900, color:'var(--primary)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{stats.totalAssets.split(',')[0]}</h3>
+                  </div>
+                  <div style={{textAlign:'center'}}>
+                    <p style={{color:'var(--text-dim)', fontSize:'9px', fontWeight:800, textTransform:'uppercase'}}>Alacak</p>
+                    <h3 style={{fontSize:'15px', fontWeight:900, color:'var(--success)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{stats.totalReceivables.split(',')[0]}</h3>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <p style={{color:'var(--text-dim)', fontSize:'9px', fontWeight:800, textTransform:'uppercase'}}>Borç</p>
+                    <h3 style={{fontSize:'15px', fontWeight:900, color:'var(--danger)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{stats.totalDebts.split(',')[0]}</h3>
+                  </div>
+                </div>
+                <div style={{height:'1px', background:'var(--border)', margin:'16px 0'}}></div>
+                <div className="flex justify-between items-center">
+                  <p style={{fontSize:'14px', fontWeight:700}}>Net Durum</p>
+                  <p style={{fontSize:'20px', fontWeight:900}}>₺{stats.balance}</p>
+                </div>
+              </div>
+              
+              <div className="list-grid">
+                {assets.map(a => (
+                  <AssetItem 
+                    key={a.id} 
+                    asset={a} 
+                    menuOpen={menuOpenId === a.id}
+                    onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === a.id ? null : a.id) }}
+                    onEdit={() => setEditingItem({ col: 'varliklar', ...a })}
+                    onDelete={() => deleteItem('varliklar', a.id)}
+                  />
+                ))}
+              </div>
             </div>
           )}
 
@@ -240,6 +361,7 @@ export default function UnifiedApp() {
                   tx={tx} 
                   menuOpen={menuOpenId === tx.id}
                   onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === tx.id ? null : tx.id) }} 
+                  onEdit={() => setEditingItem({ col: 'harcamalar', ...tx })}
                   onDelete={() => deleteItem('harcamalar', tx.id)}
                 />
               ))}
@@ -247,16 +369,23 @@ export default function UnifiedApp() {
           )}
 
           {activeTab === 'debts' && (
-            <div className="animate-slide-up list-grid">
-              {debts.map(d => (
-                <DebtItem 
-                  key={d.id} 
-                  debt={d} 
-                  menuOpen={menuOpenId === d.id}
-                  onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === d.id ? null : d.id) }}
-                  onDelete={() => deleteItem('borclar', d.id)}
-                />
-              ))}
+            <div className="animate-slide-up">
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
+                <h3 style={{fontSize:'18px', fontWeight:900}}>BORÇ / ALACAK</h3>
+                <button className="btn-text" onClick={() => setIsDebtModalOpen(true)}>+ YENİ KAYIT</button>
+              </div>
+              <div className="list-grid">
+                {debts.map(d => (
+                    <DebtItem 
+                      key={d.id} 
+                      debt={d} 
+                      menuOpen={menuOpenId === d.id}
+                      onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === d.id ? null : d.id) }}
+                      onEdit={() => setEditingItem({ col: 'borclar', ...d })}
+                      onDelete={() => deleteItem('borclar', d.id)}
+                    />
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -305,6 +434,138 @@ export default function UnifiedApp() {
             </div>
           </div>
         )}
+        {/* Add Asset Modal */}
+        {isAssetModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsAssetModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni Hesap/Varlık</h3>
+                <button onClick={() => setIsAssetModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20}/></button>
+              </div>
+              <form onSubmit={handleAddAsset} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Hesap Adı</label>
+                  <input className="form-input" placeholder="Ziraat, Nakit, vb." value={newAsset.ad} onChange={e => setNewAsset({...newAsset, ad: e.target.value})} required />
+                </div>
+                <div className="flex gap-3">
+                  <div className="input-group flex-1">
+                    <label>Bakiye</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newAsset.bakiye} onChange={e => setNewAsset({...newAsset, bakiye: e.target.value})} required />
+                  </div>
+                  <div className="input-group flex-1">
+                    <label>Birim</label>
+                    <select className="form-select" value={newAsset.birim} onChange={e => setNewAsset({...newAsset, birim: e.target.value})}>
+                      <option>TRY</option>
+                      <option>USD</option>
+                    </select>
+                  </div>
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>KAYDET</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Add Debt Modal */}
+        {isDebtModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsDebtModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni Borç veya Alacak</h3>
+                <button onClick={() => setIsDebtModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20}/></button>
+              </div>
+              <form onSubmit={handleAddDebt} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Kişi / Kurum Adı</label>
+                  <input className="form-input" placeholder="Ahmet, Banka, vb." value={newDebt.isim} onChange={e => setNewDebt({...newDebt, isim: e.target.value})} required />
+                </div>
+                <div className="flex gap-3">
+                  <div className="input-group flex-1">
+                    <label>Miktar (TRY)</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newDebt.miktar} onChange={e => setNewDebt({...newDebt, miktar: e.target.value})} required />
+                  </div>
+                  <div className="input-group flex-1">
+                    <label>Tür</label>
+                    <select className="form-select" value={newDebt.tip} onChange={e => setNewDebt({...newDebt, tip: e.target.value})}>
+                      <option>Borç</option>
+                      <option>Alacak</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="input-group">
+                  <label>Vade / Not (Opsiyonel)</label>
+                  <input className="form-input" placeholder="Ay sonu, 15 Temmuz vb." value={newDebt.vade} onChange={e => setNewDebt({...newDebt, vade: e.target.value})} />
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>KAYDET</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Edit Modal */}
+        {editingItem && (
+          <div className="modal-overlay" onClick={() => setEditingItem(null)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Düzenle</h3>
+                <button onClick={() => setEditingItem(null)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20}/></button>
+              </div>
+              <form onSubmit={handleEditItem} className="flex-col gap-4">
+                {editingItem.ad !== undefined && (
+                  <div className="input-group">
+                    <label>Ad</label>
+                    <input className="form-input" value={editingItem.ad} onChange={e => setEditingItem({...editingItem, ad: e.target.value})} />
+                  </div>
+                )}
+                {editingItem.açıklama !== undefined && (
+                  <div className="input-group">
+                    <label>Açıklama</label>
+                    <input className="form-input" value={editingItem.açıklama} onChange={e => setEditingItem({...editingItem, açıklama: e.target.value})} />
+                  </div>
+                )}
+                {editingItem.isim !== undefined && (
+                  <div className="input-group">
+                    <label>İsim</label>
+                    <input className="form-input" value={editingItem.isim} onChange={e => setEditingItem({...editingItem, isim: e.target.value})} />
+                  </div>
+                )}
+                <div className="input-group">
+                  <label>Miktar / Bakiye</label>
+                  <input className="form-input" type="number" 
+                    value={editingItem.fiyat ?? editingItem.bakiye ?? editingItem.miktar} 
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (editingItem.fiyat !== undefined) setEditingItem({...editingItem, fiyat: val});
+                      else if (editingItem.bakiye !== undefined) setEditingItem({...editingItem, bakiye: val});
+                      else if (editingItem.miktar !== undefined) setEditingItem({...editingItem, miktar: val});
+                    }} 
+                  />
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>GÜNCELLE</button>
+              </form>
+            </div>
+          </div>
+        )}
+        {/* Delete Confirmation Modal */}
+        {confirmDelete && (
+          <div className="modal-overlay" onClick={() => setConfirmDelete(null)} style={{zIndex: 2000}}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()} style={{borderRadius:'32px 32px 0 0'}}>
+              <div style={{textAlign:'center', padding:'20px 0'}}>
+                <div className="icon-circle" style={{width:'64px', height:'64px', margin:'0 auto 20px', background:'rgba(255,77,77,0.1)', color:'var(--danger)'}}>
+                  <Trash2 size={32}/>
+                </div>
+                <h3 style={{fontSize:'20px', fontWeight:900, marginBottom:'12px'}}>Emin misiniz?</h3>
+                <p style={{color:'var(--text-dim)', fontSize:'14px', marginBottom:'32px'}}>
+                  <strong>"{confirmDelete.name}"</strong> silinecek. Bu işlem geri alınamaz.
+                </p>
+                <div className="flex-col gap-3">
+                  <button className="btn-primary" style={{background:'var(--danger)', boxShadow:'0 10px 20px rgba(255,77,77,0.3)'}} onClick={executeDelete}>EVET, SİL</button>
+                  <button className="btn-text" style={{padding:'16px', fontSize:'14px', background:'transparent', border:'none', color:'var(--text-dim)'}} onClick={() => setConfirmDelete(null)}>VAZGEÇ</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Bottom Nav */}
         <nav className="bottom-nav">
@@ -342,7 +603,7 @@ function SidebarItem({ icon, label, active, onClick }) {
   );
 }
 
-function TransactionItem({ tx, onToggleMenu, menuOpen, onDelete }) {
+function TransactionItem({ tx, onToggleMenu, menuOpen, onEdit, onDelete }) {
   return (
     <div style={{position:'relative'}}>
       <div className="list-item" onClick={onToggleMenu}>
@@ -367,15 +628,15 @@ function TransactionItem({ tx, onToggleMenu, menuOpen, onDelete }) {
       </div>
       {menuOpen && (
         <div className="dropdown-menu">
-          <button className="menu-item"><Edit2 size={16}/> Düzenle</button>
-          <button className="menu-item danger" onClick={onDelete}><Trash2 size={16}/> Sil</button>
+          <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
+          <button className="menu-item danger" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={16}/> Sil</button>
         </div>
       )}
     </div>
   );
 }
 
-function AssetItem({ asset, onToggleMenu, menuOpen, onDelete }) {
+function AssetItem({ asset, onToggleMenu, menuOpen, onEdit, onDelete }) {
   return (
     <div style={{position:'relative'}}>
       <div className="list-item" onClick={onToggleMenu}>
@@ -383,7 +644,7 @@ function AssetItem({ asset, onToggleMenu, menuOpen, onDelete }) {
           <div className="icon-circle" style={{background:'rgba(79,135,255,0.1)', color:'var(--primary)'}}><CardIcon size={22}/></div>
           <div>
             <h4 style={{fontSize:'15px', fontWeight:700}}>{asset.ad}</h4>
-            <p style={{fontSize:'11px', color:'var(--text-dim)', fontWeight:600}}>{asset.birim} Portföyü</p>
+            <p style={{fontSize:'11px', color:'var(--text-dim)', fontWeight:600}}>{asset.birim === 'TL' ? 'TRY' : asset.birim} Portföyü</p>
           </div>
         </div>
         <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
@@ -393,15 +654,15 @@ function AssetItem({ asset, onToggleMenu, menuOpen, onDelete }) {
       </div>
       {menuOpen && (
         <div className="dropdown-menu">
-          <button className="menu-item"><Edit2 size={16}/> Düzenle</button>
-          <button className="menu-item danger" onClick={onDelete}><Trash2 size={16}/> Sil</button>
+          <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
+          <button className="menu-item danger" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={16}/> Sil</button>
         </div>
       )}
     </div>
   );
 }
 
-function DebtItem({ debt, onToggleMenu, menuOpen, onDelete }) {
+function DebtItem({ debt, onToggleMenu, menuOpen, onEdit, onDelete }) {
   const isBorc = debt.tip === 'Borç';
   return (
     <div style={{position:'relative'}}>
@@ -425,8 +686,8 @@ function DebtItem({ debt, onToggleMenu, menuOpen, onDelete }) {
       </div>
       {menuOpen && (
         <div className="dropdown-menu">
-          <button className="menu-item"><Edit2 size={16}/> Düzenle</button>
-          <button className="menu-item danger" onClick={onDelete}><Trash2 size={16}/> Sil</button>
+          <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
+          <button className="menu-item danger" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={16}/> Sil</button>
         </div>
       )}
     </div>
