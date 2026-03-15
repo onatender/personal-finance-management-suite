@@ -65,7 +65,7 @@ export default function UnifiedApp() {
     açıklama: '',
     fiyat: '',
     tür: 'Gider',
-    kategori: 'Mutfak',
+    kategori: 'Market',
     varlık: '',
     detaylar: []
   });
@@ -137,7 +137,7 @@ export default function UnifiedApp() {
     return () => { unsubAssets(); unsubDebts(); unsubCards(); unsubTx(); };
   }, []);
 
-  // Standardize 'TL' to 'TRY' in database
+  // Standardize 'TL' to 'TRY' and 'Mutfak' to 'Market' in database
   useEffect(() => {
     assets.forEach(async (a) => {
       if (a.birim === "TL") {
@@ -146,7 +146,14 @@ export default function UnifiedApp() {
         } catch (err) { console.error("Standardization error:", err); }
       }
     });
-  }, [assets]);
+    transactions.forEach(async (t) => {
+      if (t.kategori === "Mutfak") {
+        try {
+          await updateDoc(doc(db, "harcamalar", t.id), { kategori: "Market" });
+        } catch (err) { console.error("Migration error:", err); }
+      }
+    });
+  }, [assets, transactions]);
 
   useEffect(() => {
     let totalTRY = 0;
@@ -206,7 +213,7 @@ export default function UnifiedApp() {
         });
       }
 
-      setNewTx({ açıklama: '', fiyat: '', tür: 'Gider', kategori: 'Mutfak', varlık: assets[0]?.ad || cards[0]?.ad || '', detaylar: [] });
+      setNewTx({ açıklama: '', fiyat: '', tür: 'Gider', kategori: 'Market', varlık: assets[0]?.ad || cards[0]?.ad || '', detaylar: [] });
       setIsAddModalOpen(false);
     } catch (err) {
       alert("Hata: " + err.message);
@@ -639,12 +646,12 @@ export default function UnifiedApp() {
                 <div className="input-group">
                   <label>Kategori</label>
                   <select className="form-select" value={newTx.kategori} onChange={e => setNewTx({...newTx, kategori: e.target.value})}>
-                    {["Mutfak", "Market", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
+                    {["Market", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
 
-                {/* Sub-items for Market/Mutfak */}
-                {(newTx.kategori === 'Market' || newTx.kategori === 'Mutfak') && (
+                {/* Sub-items for Market */}
+                {(newTx.kategori === 'Market') && (
                   <div className="glass" style={{padding:'16px', marginBottom:'16px', borderStyle:'dashed', borderColor:'var(--primary)'}}>
                     <label style={{fontSize:'10px', fontWeight:800, color:'var(--primary)', marginBottom:'12px', display:'block', textTransform:'uppercase'}}>Harcama Detayları</label>
                     <div className="flex-col gap-3">
@@ -860,7 +867,7 @@ export default function UnifiedApp() {
                     <div className="input-group">
                       <label>Kategori</label>
                       <select className="form-select" value={editingItem.kategori} onChange={e => setEditingItem({...editingItem, kategori: e.target.value})}>
-                        {["Mutfak", "Market", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
+                        {["Market", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
                       </select>
                     </div>
                   )}
@@ -891,7 +898,7 @@ export default function UnifiedApp() {
                       }} 
                     />
                   </div>
-                  {(editingItem.kategori === 'Market' || editingItem.kategori === 'Mutfak') && (
+                  {(editingItem.kategori === 'Market') && (
                     <div className="glass" style={{padding:'16px', marginBottom:'16px', borderStyle:'dashed', borderColor:'var(--primary)'}}>
                       <label style={{fontSize:'10px', fontWeight:800, color:'var(--primary)', marginBottom:'12px', display:'block', textTransform:'uppercase'}}>Harcama Detayları</label>
                       <div className="flex-col gap-3">
@@ -1035,9 +1042,23 @@ function SidebarItem({ icon, label, active, onClick }) {
 }
 
 function TransactionItem({ tx, onToggleMenu, menuOpen, onEdit, onDelete }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   return (
-    <div style={{position:'relative'}}>
-      <div className="list-item" onClick={onToggleMenu} style={{alignItems: 'flex-start', padding: '16px'}}>
+    <div style={{position:'relative', marginBottom: '16px'}}>
+      <div 
+        className="list-item" 
+        onClick={() => setIsExpanded(!isExpanded)} 
+        style={{
+          alignItems: 'flex-start', 
+          padding: '16px',
+          borderRadius: isExpanded && tx.detaylar?.length > 0 ? '24px 24px 0 0' : '24px',
+          borderBottom: isExpanded && tx.detaylar?.length > 0 ? 'none' : '1px solid var(--border)',
+          marginBottom: isExpanded && tx.detaylar?.length > 0 ? '0' : '12px',
+          transition: 'all 0.2s ease',
+          background: 'var(--surface)'
+        }}
+      >
         <div style={{display:'flex', alignItems:'flex-start', gap:'16px', flex: 1}}>
           <div className="icon-circle" style={{
             background: tx.tür==='Gelir' ? 'rgba(16,185,129,0.1)' : 'rgba(255,77,77,0.1)',
@@ -1060,25 +1081,32 @@ function TransactionItem({ tx, onToggleMenu, menuOpen, onEdit, onDelete }) {
           <span style={{fontSize:'16px', fontWeight:900, color: tx.tür==='Gelir' ? 'var(--success)' : 'white', whiteSpace: 'nowrap'}}>
             {tx.tür==='Gelir' ? '+' : '-'}₺{parseFloat(tx.fiyat || 0).toLocaleString("tr-TR")}
           </span>
-          <MoreVertical size={16} color="var(--text-dim)"/>
+          <button 
+            className="glass icon-circle" 
+            style={{width:'32px', height:'32px', border:'none', background:'transparent'}}
+            onClick={(e) => { e.stopPropagation(); onToggleMenu(e); }}
+          >
+            <MoreVertical size={16} color="var(--text-dim)"/>
+          </button>
         </div>
       </div>
       
-      {/* Detail row */}
-      {tx.detaylar && tx.detaylar.length > 0 && (
+      {/* Detail row - Toggleable and Merged */}
+      {isExpanded && tx.detaylar && tx.detaylar.length > 0 && (
         <div style={{
-          margin: '-8px 12px 12px 12px',
-          padding: '10px 16px',
-          background: 'rgba(255,255,255,0.02)',
-          borderRadius: '0 0 16px 16px',
+          padding: '4px 16px 20px 54px',
+          background: 'var(--surface)',
+          borderRadius: '0 0 24px 24px',
           border: '1px solid var(--border)',
           borderTop: 'none',
           display: 'flex',
           flexWrap: 'wrap',
-          gap: '8px'
+          gap: '8px',
+          marginTop: '0',
+          marginBottom: '12px'
         }}>
           {tx.detaylar.map(d => (
-            <span key={d.id} style={{fontSize:'10px', color:'var(--text-dim)', background:'rgba(255,255,255,0.05)', padding:'2px 8px', borderRadius:'10px', fontWeight:600}}>
+            <span key={d.id} style={{fontSize:'10px', color:'var(--text-dim)', background:'rgba(255,255,255,0.05)', padding:'4px 10px', borderRadius:'12px', fontWeight:600, border: '1px solid rgba(255,255,255,0.05)'}}>
               {d.isim}: ₺{parseFloat(d.miktar).toLocaleString("tr-TR")}
             </span>
           ))}
