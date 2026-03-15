@@ -41,11 +41,14 @@ export default function UnifiedApp() {
   const [editingItem, setEditingItem] = useState(null);
   const [isAssetModalOpen, setIsAssetModalOpen] = useState(false);
   const [isDebtModalOpen, setIsDebtModalOpen] = useState(false);
+  const [isCardModalOpen, setIsCardModalOpen] = useState(false);
+  const [isDebtPayModalOpen, setIsDebtPayModalOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null); // { col, id, name }
   
   // Data State
   const [assets, setAssets] = useState([]);
   const [debts, setDebts] = useState([]);
+  const [cards, setCards] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [usdRate, setUsdRate] = useState(0);
   const [stats, setStats] = useState({ 
@@ -63,7 +66,8 @@ export default function UnifiedApp() {
     fiyat: '',
     tür: 'Gider',
     kategori: 'Mutfak',
-    varlık: ''
+    varlık: '',
+    detaylar: []
   });
 
   const [newAsset, setNewAsset] = useState({
@@ -77,6 +81,21 @@ export default function UnifiedApp() {
     miktar: '',
     tip: 'Borç',
     vade: ''
+  });
+
+  const [newCard, setNewCard] = useState({
+    ad: '',
+    kod: '', // e.g. "VISA-1234"
+    limit: '',
+    güncelBorç: ''
+  });
+
+  const [payDebtState, setPayDebtState] = useState({
+    debtId: '',
+    debtName: '',
+    debtType: '', // 'Borç' or 'Alacak'
+    amount: '',
+    varlık: ''
   });
 
   useEffect(() => {
@@ -95,6 +114,10 @@ export default function UnifiedApp() {
       setDebts(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
+    const unsubCards = onSnapshot(query(collection(db, "kredi_kartlari")), (snap) => {
+      setCards(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
     const unsubTx = onSnapshot(query(collection(db, "harcamalar"), orderBy("tarih", "desc"), limit(50)), (snap) => {
       setTransactions(snap.docs.map(doc => {
         const d = doc.data();
@@ -104,12 +127,14 @@ export default function UnifiedApp() {
           fiyat: parseFloat(d.fiyat || d.price || 0),
           kategori: d.kategori || d.category || "Genel",
           tür: d.tür || d.type || "Gider",
+          varlık: d.varlık || d.asset || "",
+          detaylar: d.detaylar || [],
           tarih: d.tarih
         };
       }));
     });
 
-    return () => { unsubAssets(); unsubDebts(); unsubTx(); };
+    return () => { unsubAssets(); unsubDebts(); unsubCards(); unsubTx(); };
   }, []);
 
   // Standardize 'TL' to 'TRY' in database
@@ -134,22 +159,24 @@ export default function UnifiedApp() {
     const exp = transactions.filter(t => t.tür === 'Gider').reduce((s, t) => s + t.fiyat, 0);
     const totalBorc = debts.filter(d => d.tip === 'Borç').reduce((s, d) => s + parseFloat(d.miktar || 0), 0);
     const totalAlacak = debts.filter(d => d.tip === 'Alacak').reduce((s, d) => s + parseFloat(d.miktar || 0), 0);
+    const totalCardDebt = cards.reduce((s, c) => s + parseFloat(c.güncelBorç || 0), 0);
     
-    const netWorth = totalTRY + totalAlacak - totalBorc;
+    const combinedDebt = totalBorc + totalCardDebt;
+    const netWorth = totalTRY + totalAlacak - combinedDebt;
 
     setStats({
       balance: netWorth.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
       income: inc.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
       expense: exp.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
       totalAssets: totalTRY.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
-      totalDebts: totalBorc.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      totalDebts: combinedDebt.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
       totalReceivables: totalAlacak.toLocaleString("tr-TR", { minimumFractionDigits: 2 })
     });
 
     if (assets.length > 0 && !newTx.varlık) {
       setNewTx(prev => ({ ...prev, varlık: assets[0].ad }));
     }
-  }, [assets, transactions, debts, usdRate]);
+  }, [assets, transactions, debts, cards, usdRate]);
 
   const handleAddTransaction = async (e) => {
     e.preventDefault();
@@ -162,20 +189,42 @@ export default function UnifiedApp() {
         tarih: serverTimestamp()
       });
       
-      // Update asset balance
+      // Update asset balance OR Credit Card debt
       const asset = assets.find(a => a.ad === newTx.varlık);
+      const card = cards.find(c => c.ad === newTx.varlık);
+
       if (asset) {
         const diff = newTx.tür === 'Gelir' ? parseFloat(newTx.fiyat) : -parseFloat(newTx.fiyat);
         await updateDoc(doc(db, "varliklar", asset.id), {
           bakiye: parseFloat(asset.bakiye || 0) + diff
         });
+      } else if (card) {
+        // Expense on credit card increases debt, Income (e.g. payment) decreases it
+        const diff = newTx.tür === 'Gider' ? parseFloat(newTx.fiyat) : -parseFloat(newTx.fiyat);
+        await updateDoc(doc(db, "kredi_kartlari", card.id), {
+          güncelBorç: parseFloat(card.güncelBorç || 0) + diff
+        });
       }
 
-      setNewTx({ açıklama: '', fiyat: '', tür: 'Gider', kategori: 'Mutfak', varlık: assets[0]?.ad || '' });
+      setNewTx({ açıklama: '', fiyat: '', tür: 'Gider', kategori: 'Mutfak', varlık: assets[0]?.ad || cards[0]?.ad || '', detaylar: [] });
       setIsAddModalOpen(false);
     } catch (err) {
       alert("Hata: " + err.message);
     }
+  };
+
+  const handleAddCard = async (e) => {
+    e.preventDefault();
+    if (!newCard.ad || !newCard.limit) return;
+    try {
+      await addDoc(collection(db, "kredi_kartlari"), {
+        ...newCard,
+        limit: parseFloat(newCard.limit),
+        güncelBorç: parseFloat(newCard.güncelBorç || 0)
+      });
+      setNewCard({ ad: '', kod: '', limit: '', güncelBorç: '' });
+      setIsCardModalOpen(false);
+    } catch (err) { alert("Hata: " + err.message); }
   };
 
   const handleAddAsset = async (e) => {
@@ -204,23 +253,137 @@ export default function UnifiedApp() {
     } catch (err) { alert("Hata: " + err.message); }
   };
 
-  const handleEditItem = async (e) => {
+  const handlePayDebt = async (e) => {
     e.preventDefault();
-    const { col, id, ...data } = editingItem;
+    if (!payDebtState.amount || !payDebtState.varlık) return;
+
     try {
-      await updateDoc(doc(db, col, id), {
-        ...data,
-        // Convert numbers if necessary
-        ...(data.fiyat !== undefined && { fiyat: parseFloat(data.fiyat) }),
-        ...(data.bakiye !== undefined && { bakiye: parseFloat(data.bakiye) }),
-        ...(data.miktar !== undefined && { miktar: parseFloat(data.miktar) })
+      const amount = parseFloat(payDebtState.amount);
+      const debt = debts.find(d => d.id === payDebtState.debtId);
+      const isBorc = debt?.tip === 'Borç';
+      
+      // 1. Update Debt amount
+      const newDebtMiktar = parseFloat(debt.miktar || 0) - amount;
+      if (newDebtMiktar <= 0) {
+        await deleteDoc(doc(db, "borclar", debt.id));
+      } else {
+        await updateDoc(doc(db, "borclar", debt.id), { miktar: newDebtMiktar });
+      }
+
+      // 2. Register a transaction
+      await addDoc(collection(db, "harcamalar"), {
+        açıklama: `${debt.isim} - ${isBorc ? 'Borç Ödemesi' : 'Alacak Tahsili'}`,
+        fiyat: amount,
+        tür: isBorc ? 'Gider' : 'Gelir',
+        kategori: 'Diğer',
+        varlık: payDebtState.varlık,
+        tarih: serverTimestamp()
       });
-      setEditingItem(null);
+
+      // 3. Update account balance
+      const asset = assets.find(a => a.ad === payDebtState.varlık);
+      const card = cards.find(c => c.ad === payDebtState.varlık);
+
+      if (asset) {
+        const diff = isBorc ? -amount : amount;
+        await updateDoc(doc(db, "varliklar", asset.id), {
+          bakiye: parseFloat(asset.bakiye || 0) + diff
+        });
+      } else if (card) {
+        // If it's a debt payment using credit card (indirectly increasing card debt)
+        // Or if it's receiving money to credit card (decreasing card debt)
+        const diff = isBorc ? amount : -amount;
+        await updateDoc(doc(db, "kredi_kartlari", card.id), {
+          güncelBorç: parseFloat(card.güncelBorç || 0) + diff
+        });
+      }
+
+      setIsDebtPayModalOpen(false);
+      setPayDebtState({ debtId: '', debtName: '', amount: '', varlık: '' });
     } catch (err) { alert("Hata: " + err.message); }
   };
 
+  const handleEditItem = async (e) => {
+    e.preventDefault();
+    const { col, id, ...data } = editingItem;
+    const originalItem = [...assets, ...transactions, ...debts, ...cards].find(x => x.id === id);
+
+    try {
+      if (col === 'harcamalar' && originalItem) {
+        const oldFiyat = parseFloat(originalItem.fiyat || 0);
+        const newFiyat = parseFloat(data.fiyat || 0);
+        const oldVarlikName = originalItem.varlık || originalItem.asset || "";
+        const newVarlikName = data.varlık;
+        
+        const oldIsExpense = originalItem.tür === 'Gider';
+        const newIsExpense = (data.tür || originalItem.tür) === 'Gider';
+
+        // 1. Revert old balance
+        const oldAccount = assets.find(a => a.ad === oldVarlikName) || cards.find(c => c.ad === oldVarlikName);
+        if (oldAccount) {
+          const isCard = cards.some(c => c.id === oldAccount.id);
+          const revertDiff = oldIsExpense ? oldFiyat : -oldFiyat; 
+          
+          if (isCard) {
+            await updateDoc(doc(db, "kredi_kartlari", oldAccount.id), {
+              güncelBorç: parseFloat(oldAccount.güncelBorç || 0) - revertDiff
+            });
+          } else {
+            const currentBakiye = parseFloat(oldAccount.bakiye || 0);
+            await updateDoc(doc(db, "varliklar", oldAccount.id), {
+              bakiye: currentBakiye + revertDiff
+            });
+          }
+        }
+
+        // 2. Apply new balance
+        const targetVarlikName = newVarlikName || oldVarlikName;
+        const newAccount = assets.find(a => a.ad === targetVarlikName) || cards.find(c => c.ad === targetVarlikName);
+        
+        if (newAccount) {
+          const isCard = cards.some(c => c.id === newAccount.id);
+          const applyDiff = newIsExpense ? newFiyat : -newFiyat;
+          
+          let baseBalance;
+          if (newAccount.ad === oldVarlikName) {
+            // Re-fetch logic (local sync): account for reversion just performed
+            const revertDiff = oldIsExpense ? oldFiyat : -oldFiyat;
+            baseBalance = isCard 
+              ? parseFloat(newAccount.güncelBorç || 0) - revertDiff
+              : parseFloat(newAccount.bakiye || 0) + revertDiff;
+          } else {
+            baseBalance = isCard ? parseFloat(newAccount.güncelBorç || 0) : parseFloat(newAccount.bakiye || 0);
+          }
+
+          if (isCard) {
+            await updateDoc(doc(db, "kredi_kartlari", newAccount.id), {
+              güncelBorç: baseBalance + applyDiff
+            });
+          } else {
+            await updateDoc(doc(db, "varliklar", newAccount.id), {
+              bakiye: baseBalance - applyDiff
+            });
+          }
+        }
+      }
+
+      await updateDoc(doc(db, col, id), {
+        ...data,
+        ...(data.fiyat !== undefined && { fiyat: parseFloat(data.fiyat) }),
+        ...(data.bakiye !== undefined && { bakiye: parseFloat(data.bakiye) }),
+        ...(data.miktar !== undefined && { miktar: parseFloat(data.miktar) }),
+        ...(data.güncelBorç !== undefined && { güncelBorç: parseFloat(data.güncelBorç) }),
+        ...(data.limit !== undefined && { limit: parseFloat(data.limit) })
+      });
+      setEditingItem(null);
+    } catch (err) { 
+      console.error(err);
+      alert("Hata: " + err.message); 
+    }
+  };
+
   const deleteItem = async (col, id) => {
-    const item = [...assets, ...transactions, ...debts].find(x => x.id === id);
+    const item = [...assets, ...transactions, ...debts, ...cards].find(x => x.id === id);
     setConfirmDelete({ col, id, name: item?.ad || item?.açıklama || item?.isim || 'bu öğe' });
     setMenuOpenId(null);
   };
@@ -228,7 +391,33 @@ export default function UnifiedApp() {
   const executeDelete = async () => {
     if (!confirmDelete) return;
     try {
-      await deleteDoc(doc(db, confirmDelete.col, confirmDelete.id));
+      const { col, id } = confirmDelete;
+      const originalItem = [...assets, ...transactions, ...debts, ...cards].find(x => x.id === id);
+
+      // Revert balances if deleting a transaction
+      if (col === 'harcamalar' && originalItem) {
+        const amount = parseFloat(originalItem.fiyat || 0);
+        const varlikName = originalItem.varlık || originalItem.asset;
+        const isExpense = originalItem.tür === 'Gider';
+        
+        const account = assets.find(a => a.ad === varlikName) || cards.find(c => c.ad === varlikName);
+        if (account) {
+          const isCard = cards.some(c => c.id === account.id);
+          const revertDiff = isExpense ? amount : -amount;
+          
+          if (isCard) {
+            await updateDoc(doc(db, "kredi_kartlari", account.id), {
+              güncelBorç: parseFloat(account.güncelBorç || 0) - revertDiff
+            });
+          } else {
+            await updateDoc(doc(db, "varliklar", account.id), {
+              bakiye: parseFloat(account.bakiye || 0) + revertDiff
+            });
+          }
+        }
+      }
+
+      await deleteDoc(doc(db, col, id));
       setConfirmDelete(null);
     } catch (err) {
       alert("Hata: " + err.message);
@@ -373,6 +562,23 @@ export default function UnifiedApp() {
           {activeTab === 'debts' && (
             <div className="animate-slide-up">
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
+                <h3 style={{fontSize:'18px', fontWeight:900}}>KREDİ KARTLARIM</h3>
+                <button className="btn-text" onClick={() => setIsCardModalOpen(true)}>+ YENİ KART</button>
+              </div>
+              <div className="list-grid" style={{marginBottom:'32px'}}>
+                {cards.map(c => (
+                  <CardItem 
+                    key={c.id} 
+                    card={c} 
+                    menuOpen={menuOpenId === c.id}
+                    onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === c.id ? null : c.id) }}
+                    onEdit={() => setEditingItem({ col: 'kredi_kartlari', ...c })}
+                    onDelete={() => deleteItem('kredi_kartlari', c.id)}
+                  />
+                ))}
+              </div>
+
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
                 <h3 style={{fontSize:'18px', fontWeight:900}}>BORÇ / ALACAK</h3>
                 <button className="btn-text" onClick={() => setIsDebtModalOpen(true)}>+ YENİ KAYIT</button>
               </div>
@@ -385,6 +591,16 @@ export default function UnifiedApp() {
                       onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === d.id ? null : d.id) }}
                       onEdit={() => setEditingItem({ col: 'borclar', ...d })}
                       onDelete={() => deleteItem('borclar', d.id)}
+                      onPay={() => {
+                        setPayDebtState({ 
+                          debtId: d.id, 
+                          debtName: d.isim, 
+                          debtType: d.tip, 
+                          amount: d.miktar.toString(), 
+                          varlık: assets[0]?.ad || '' 
+                        });
+                        setIsDebtPayModalOpen(true);
+                      }}
                     />
                 ))}
               </div>
@@ -395,13 +611,14 @@ export default function UnifiedApp() {
         {/* Add Transaction Modal */}
         {isAddModalOpen && (
           <div className="modal-overlay" onClick={() => setIsAddModalOpen(false)}>
-            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+            <div className="modal-content animate-slide-up" style={{maxHeight:'90vh', display:'flex', flexDirection:'column'}} onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px', flexShrink:0}}>
                 <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni İşlem Ekle</h3>
                 <button onClick={() => setIsAddModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
               </div>
               
-              <form onSubmit={handleAddTransaction} className="flex-col gap-4">
+              <div style={{overflowY:'auto', paddingRight:'4px'}}>
+                <form onSubmit={handleAddTransaction} className="flex-col gap-4">
                 <div className="input-group">
                   <label>Açıklama</label>
                   <input className="form-input" placeholder="Market, Maaş, vb." value={newTx.açıklama} onChange={e => setNewTx({...newTx, açıklama: e.target.value})} required />
@@ -422,20 +639,75 @@ export default function UnifiedApp() {
                 <div className="input-group">
                   <label>Kategori</label>
                   <select className="form-select" value={newTx.kategori} onChange={e => setNewTx({...newTx, kategori: e.target.value})}>
-                    {["Mutfak", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
+                    {["Mutfak", "Market", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
+
+                {/* Sub-items for Market/Mutfak */}
+                {(newTx.kategori === 'Market' || newTx.kategori === 'Mutfak') && (
+                  <div className="glass" style={{padding:'16px', marginBottom:'16px', borderStyle:'dashed', borderColor:'var(--primary)'}}>
+                    <label style={{fontSize:'10px', fontWeight:800, color:'var(--primary)', marginBottom:'12px', display:'block', textTransform:'uppercase'}}>Harcama Detayları</label>
+                    <div className="flex-col gap-3">
+                      {[
+                        {id:'meyve', label:'Meyve/Sebze'},
+                        {id:'aburcubur', label:'Abur Cubur'},
+                        {id:'icecek', label:'İçecek'},
+                        {id:'et', label:'Et/Süt/Şarküteri'},
+                        {id:'temizlik', label:'Temizlik/Kişisel Bakım'},
+                        {id:'diger_gida', label:'Diğer Gıda'},
+                        {id:'diger', label:'Diğer'}
+                      ].map(item => (
+                        <div key={item.id} className="flex items-center gap-3">
+                          <span style={{fontSize:'12px', flex:1}}>{item.label}</span>
+                          <input 
+                            className="form-input" 
+                            style={{width:'100px', padding:'8px 12px'}} 
+                            type="number" 
+                            placeholder="0.00"
+                            value={newTx.detaylar?.find(d => d.id === item.id)?.miktar || ''}
+                            onChange={e => {
+                              const val = e.target.value;
+                              const currentDetaylar = [...(newTx.detaylar || [])];
+                              const index = currentDetaylar.findIndex(d => d.id === item.id);
+                              if (index > -1) {
+                                if (val === '') currentDetaylar.splice(index, 1);
+                                else currentDetaylar[index].miktar = val;
+                              } else if (val !== '') {
+                                currentDetaylar.push({ id: item.id, isim: item.label, miktar: val });
+                              }
+                              
+                              // Auto-calculate total price if details are being filled
+                              const total = currentDetaylar.reduce((sum, d) => sum + parseFloat(d.miktar || 0), 0);
+                              setNewTx({
+                                ...newTx, 
+                                detaylar: currentDetaylar,
+                                fiyat: total > 0 ? total.toString() : newTx.fiyat
+                              });
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="input-group">
                   <label>Ödeme Yöntemi / Varlık</label>
                   <select className="form-select" value={newTx.varlık} onChange={e => setNewTx({...newTx, varlık: e.target.value})}>
-                    {assets.map(a => <option key={a.id}>{a.ad}</option>)}
+                    <optgroup label="Hesaplar/Varlıklar">
+                      {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                    </optgroup>
+                    <optgroup label="Kredi Kartları">
+                      {cards.map(c => <option key={c.id} value={c.ad}>{c.ad}</option>)}
+                    </optgroup>
                   </select>
                 </div>
-                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>KAYDET</button>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px', marginBottom:'24px'}}>KAYDET</button>
               </form>
             </div>
           </div>
+        </div>
         )}
+
         {/* Add Asset Modal */}
         {isAssetModalOpen && (
           <div className="modal-overlay" onClick={() => setIsAssetModalOpen(false)}>
@@ -504,72 +776,203 @@ export default function UnifiedApp() {
           </div>
         )}
 
+        {/* Add Credit Card Modal */}
+        {isCardModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsCardModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni Kredi Kartı</h3>
+                <button onClick={() => setIsCardModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              <form onSubmit={handleAddCard} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Kart Adı</label>
+                  <input className="form-input" placeholder="Bonus, Axess vb." value={newCard.ad} onChange={e => setNewCard({...newCard, ad: e.target.value})} required />
+                </div>
+                <div className="input-group">
+                  <label>Kart No (Son 4 hane vb.)</label>
+                  <input className="form-input" placeholder="VISA-4242" value={newCard.kod} onChange={e => setNewCard({...newCard, kod: e.target.value})} />
+                </div>
+                <div className="flex gap-3">
+                  <div className="input-group flex-1">
+                    <label>Limit (TRY)</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newCard.limit} onChange={e => setNewCard({...newCard, limit: e.target.value})} required />
+                  </div>
+                  <div className="input-group flex-1">
+                    <label>Güncel Borç (TRY)</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newCard.güncelBorç} onChange={e => setNewCard({...newCard, güncelBorç: e.target.value})} />
+                  </div>
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>KAYDET</button>
+              </form>
+            </div>
+          </div>
+        )}
+
         {/* Edit Modal */}
         {editingItem && (
           <div className="modal-overlay" onClick={() => setEditingItem(null)}>
-            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+            <div className="modal-content animate-slide-up" style={{maxHeight:'90vh', display:'flex', flexDirection:'column'}} onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px', flexShrink:0}}>
                 <h3 style={{fontSize:'20px', fontWeight:900}}>Düzenle</h3>
                 <button onClick={() => setEditingItem(null)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
               </div>
-              <form onSubmit={handleEditItem} className="flex-col gap-4">
-                {editingItem.ad !== undefined && (
+              
+              <div style={{overflowY:'auto', paddingRight:'4px'}}>
+                <form onSubmit={handleEditItem} className="flex-col gap-4">
+                  {editingItem.ad !== undefined && (
+                    <div className="input-group">
+                      <label>Ad</label>
+                      <input className="form-input" value={editingItem.ad} onChange={e => setEditingItem({...editingItem, ad: e.target.value})} />
+                    </div>
+                  )}
+                  {editingItem.açıklama !== undefined && (
+                    <div className="input-group">
+                      <label>Açıklama</label>
+                      <input className="form-input" value={editingItem.açıklama} onChange={e => setEditingItem({...editingItem, açıklama: e.target.value})} />
+                    </div>
+                  )}
+                  {editingItem.isim !== undefined && (
+                    <div className="input-group">
+                      <label>İsim</label>
+                      <input className="form-input" value={editingItem.isim} onChange={e => setEditingItem({...editingItem, isim: e.target.value})} />
+                    </div>
+                  )}
+                  {editingItem.tür !== undefined && (
+                    <div className="input-group">
+                      <label>Tür</label>
+                      <select className="form-select" value={editingItem.tür} onChange={e => setEditingItem({...editingItem, tür: e.target.value})}>
+                        <option>Gider</option>
+                        <option>Gelir</option>
+                      </select>
+                    </div>
+                  )}
+                  {editingItem.tip !== undefined && (
+                    <div className="input-group">
+                      <label>Tür</label>
+                      <select className="form-select" value={editingItem.tip} onChange={e => setEditingItem({...editingItem, tip: e.target.value})}>
+                        <option>Borç</option>
+                        <option>Alacak</option>
+                      </select>
+                    </div>
+                  )}
+                  {editingItem.kategori !== undefined && (
+                    <div className="input-group">
+                      <label>Kategori</label>
+                      <select className="form-select" value={editingItem.kategori} onChange={e => setEditingItem({...editingItem, kategori: e.target.value})}>
+                        {["Mutfak", "Market", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {editingItem.varlık !== undefined && (
+                    <div className="input-group">
+                      <label>Ödeme Yöntemi / Varlık</label>
+                      <select className="form-select" value={editingItem.varlık} onChange={e => setEditingItem({...editingItem, varlık: e.target.value})}>
+                        <optgroup label="Hesaplar/Varlıklar">
+                          {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                        </optgroup>
+                        <optgroup label="Kredi Kartları">
+                          {cards.map(c => <option key={c.id} value={c.ad}>{c.ad}</option>)}
+                        </optgroup>
+                      </select>
+                    </div>
+                  )}
                   <div className="input-group">
-                    <label>Ad</label>
-                    <input className="form-input" value={editingItem.ad} onChange={e => setEditingItem({...editingItem, ad: e.target.value})} />
+                    <label>Miktar / Bakiye / Borç / Limit</label>
+                    <input className="form-input" type="number" 
+                      value={editingItem.fiyat ?? editingItem.bakiye ?? editingItem.miktar ?? editingItem.güncelBorç ?? editingItem.limit} 
+                      onChange={e => {
+                        const val = e.target.value;
+                        if (editingItem.fiyat !== undefined) setEditingItem({...editingItem, fiyat: val});
+                        else if (editingItem.bakiye !== undefined) setEditingItem({...editingItem, bakiye: val});
+                        else if (editingItem.miktar !== undefined) setEditingItem({...editingItem, miktar: val});
+                        else if (editingItem.güncelBorç !== undefined) setEditingItem({...editingItem, güncelBorç: val});
+                        else if (editingItem.limit !== undefined) setEditingItem({...editingItem, limit: val});
+                      }} 
+                    />
                   </div>
-                )}
-                {editingItem.açıklama !== undefined && (
-                  <div className="input-group">
-                    <label>Açıklama</label>
-                    <input className="form-input" value={editingItem.açıklama} onChange={e => setEditingItem({...editingItem, açıklama: e.target.value})} />
-                  </div>
-                )}
-                {editingItem.isim !== undefined && (
-                  <div className="input-group">
-                    <label>İsim</label>
-                    <input className="form-input" value={editingItem.isim} onChange={e => setEditingItem({...editingItem, isim: e.target.value})} />
-                  </div>
-                )}
-                {editingItem.tür !== undefined && (
-                  <div className="input-group">
-                    <label>Tür</label>
-                    <select className="form-select" value={editingItem.tür} onChange={e => setEditingItem({...editingItem, tür: e.target.value})}>
-                      <option>Gider</option>
-                      <option>Gelir</option>
-                    </select>
-                  </div>
-                )}
-                {editingItem.tip !== undefined && (
-                  <div className="input-group">
-                    <label>Tür</label>
-                    <select className="form-select" value={editingItem.tip} onChange={e => setEditingItem({...editingItem, tip: e.target.value})}>
-                      <option>Borç</option>
-                      <option>Alacak</option>
-                    </select>
-                  </div>
-                )}
-                {editingItem.kategori !== undefined && (
-                  <div className="input-group">
-                    <label>Kategori</label>
-                    <select className="form-select" value={editingItem.kategori} onChange={e => setEditingItem({...editingItem, kategori: e.target.value})}>
-                      {["Mutfak", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
-                    </select>
-                  </div>
-                )}
+                  {(editingItem.kategori === 'Market' || editingItem.kategori === 'Mutfak') && (
+                    <div className="glass" style={{padding:'16px', marginBottom:'16px', borderStyle:'dashed', borderColor:'var(--primary)'}}>
+                      <label style={{fontSize:'10px', fontWeight:800, color:'var(--primary)', marginBottom:'12px', display:'block', textTransform:'uppercase'}}>Harcama Detayları</label>
+                      <div className="flex-col gap-3">
+                        {[
+                          {id:'meyve', label:'Meyve/Sebze'},
+                          {id:'aburcubur', label:'Abur Cubur'},
+                          {id:'icecek', label:'İçecek'},
+                          {id:'et', label:'Et/Süt/Şarküteri'},
+                          {id:'temizlik', label:'Temizlik/Kişisel Bakım'},
+                          {id:'diger_gida', label:'Diğer Gıda'},
+                          {id:'diger', label:'Diğer'}
+                        ].map(item => (
+                          <div key={item.id} className="flex items-center gap-3">
+                            <span style={{fontSize:'12px', flex:1}}>{item.label}</span>
+                            <input 
+                              className="form-input" 
+                              style={{width:'100px', padding:'8px 12px'}} 
+                              type="number" 
+                              placeholder="0.00"
+                              value={editingItem.detaylar?.find(d => d.id === item.id)?.miktar || ''}
+                              onChange={e => {
+                                const val = e.target.value;
+                                const currentDetaylar = [...(editingItem.detaylar || [])];
+                                const index = currentDetaylar.findIndex(d => d.id === item.id);
+                                if (index > -1) {
+                                  if (val === '') currentDetaylar.splice(index, 1);
+                                  else currentDetaylar[index].miktar = val;
+                                } else if (val !== '') {
+                                  currentDetaylar.push({ id: item.id, isim: item.label, miktar: val });
+                                }
+                                
+                                const total = currentDetaylar.reduce((sum, d) => sum + parseFloat(d.miktar || 0), 0);
+                                setEditingItem({
+                                  ...editingItem, 
+                                  detaylar: currentDetaylar,
+                                  fiyat: total > 0 ? total.toString() : editingItem.fiyat
+                                });
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <button type="submit" className="btn-primary" style={{marginTop:'8px', marginBottom:'24px'}}>GÜNCELLE</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Debt Payment Modal */}
+        {isDebtPayModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsDebtPayModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>
+                  {payDebtState.debtType === 'Borç' ? 'Borç Öde' : 'Alacak Tahsil Et'}: {payDebtState.debtName}
+                </h3>
+                <button onClick={() => setIsDebtPayModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              <form onSubmit={handlePayDebt} className="flex-col gap-4">
                 <div className="input-group">
-                  <label>Miktar / Bakiye</label>
-                  <input className="form-input" type="number" 
-                    value={editingItem.fiyat ?? editingItem.bakiye ?? editingItem.miktar} 
-                    onChange={e => {
-                      const val = e.target.value;
-                      if (editingItem.fiyat !== undefined) setEditingItem({...editingItem, fiyat: val});
-                      else if (editingItem.bakiye !== undefined) setEditingItem({...editingItem, bakiye: val});
-                      else if (editingItem.miktar !== undefined) setEditingItem({...editingItem, miktar: val});
-                    }} 
-                  />
+                  <label>{payDebtState.debtType === 'Borç' ? 'Ödenecek Miktar' : 'Tahsil Edilecek Miktar'}</label>
+                  <input className="form-input" type="number" placeholder="0.00" value={payDebtState.amount} onChange={e => setPayDebtState({...payDebtState, amount: e.target.value})} required />
                 </div>
-                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>GÜNCELLE</button>
+                <div className="input-group">
+                  <label>Ödeme Hesabı</label>
+                  <select className="form-select" value={payDebtState.varlık} onChange={e => setPayDebtState({...payDebtState, varlık: e.target.value})} required>
+                    <option value="">Seçiniz</option>
+                    <optgroup label="Hesaplar/Varlıklar">
+                      {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                    </optgroup>
+                    <optgroup label="Kredi Kartları">
+                      {cards.map(c => <option key={c.id} value={c.ad}>{c.ad}</option>)}
+                    </optgroup>
+                  </select>
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>
+                  {payDebtState.debtType === 'Borç' ? 'ÖDEMEYİ TAMAMLA' : 'TAHSİLATI TAMAMLA'}
+                </button>
               </form>
             </div>
           </div>
@@ -634,26 +1037,53 @@ function SidebarItem({ icon, label, active, onClick }) {
 function TransactionItem({ tx, onToggleMenu, menuOpen, onEdit, onDelete }) {
   return (
     <div style={{position:'relative'}}>
-      <div className="list-item" onClick={onToggleMenu}>
-        <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
+      <div className="list-item" onClick={onToggleMenu} style={{alignItems: 'flex-start', padding: '16px'}}>
+        <div style={{display:'flex', alignItems:'flex-start', gap:'16px', flex: 1}}>
           <div className="icon-circle" style={{
             background: tx.tür==='Gelir' ? 'rgba(16,185,129,0.1)' : 'rgba(255,77,77,0.1)',
-            color: tx.tür==='Gelir' ? 'var(--success)' : 'var(--danger)'
+            color: tx.tür==='Gelir' ? 'var(--success)' : 'var(--danger)',
+            marginTop: '2px',
+            flexShrink: 0
           }}>
             {tx.tür==='Gelir' ? <ArrowUpCircle size={22}/> : <ArrowDownCircle size={22}/>}
           </div>
-          <div>
-            <h4 style={{fontSize:'15px', fontWeight:700}}>{tx.açıklama}</h4>
-            <p style={{fontSize:'11px', color:'var(--text-dim)', fontWeight:600}}>{tx.kategori} • {tx.tarih ? new Date(tx.tarih.seconds*1000).toLocaleDateString("tr-TR") : '...'}</p>
+          <div className="flex-col" style={{gap:'4px', overflow: 'hidden'}}>
+            <h4 style={{fontSize:'16px', fontWeight:900, lineHeight:'1.2', wordBreak: 'break-word'}}>{tx.açıklama}</h4>
+            <div className="flex-col" style={{gap:'2px'}}>
+               <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:800}}>Kategori: {tx.kategori}</p>
+               <p style={{fontSize:'10px', color:'var(--primary)', fontWeight:800}}>Hesap: {tx.varlık || '...'}</p>
+               <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:600}}>Tarih: {tx.tarih ? new Date(tx.tarih.seconds*1000).toLocaleDateString("tr-TR") : '...'}</p>
+            </div>
           </div>
         </div>
-        <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
-          <span style={{fontSize:'16px', fontWeight:900, color: tx.tür==='Gelir' ? 'var(--success)' : 'white'}}>
+        <div style={{display:'flex', alignItems:'center', gap:'4px', marginLeft: '12px', flexShrink: 0, marginTop: '2px'}}>
+          <span style={{fontSize:'16px', fontWeight:900, color: tx.tür==='Gelir' ? 'var(--success)' : 'white', whiteSpace: 'nowrap'}}>
             {tx.tür==='Gelir' ? '+' : '-'}₺{parseFloat(tx.fiyat || 0).toLocaleString("tr-TR")}
           </span>
           <MoreVertical size={16} color="var(--text-dim)"/>
         </div>
       </div>
+      
+      {/* Detail row */}
+      {tx.detaylar && tx.detaylar.length > 0 && (
+        <div style={{
+          margin: '-8px 12px 12px 12px',
+          padding: '10px 16px',
+          background: 'rgba(255,255,255,0.02)',
+          borderRadius: '0 0 16px 16px',
+          border: '1px solid var(--border)',
+          borderTop: 'none',
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '8px'
+        }}>
+          {tx.detaylar.map(d => (
+            <span key={d.id} style={{fontSize:'10px', color:'var(--text-dim)', background:'rgba(255,255,255,0.05)', padding:'2px 8px', borderRadius:'10px', fontWeight:600}}>
+              {d.isim}: ₺{parseFloat(d.miktar).toLocaleString("tr-TR")}
+            </span>
+          ))}
+        </div>
+      )}
       {menuOpen && (
         <div className="dropdown-menu">
           <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
@@ -690,7 +1120,7 @@ function AssetItem({ asset, onToggleMenu, menuOpen, onEdit, onDelete }) {
   );
 }
 
-function DebtItem({ debt, onToggleMenu, menuOpen, onEdit, onDelete }) {
+function DebtItem({ debt, onToggleMenu, menuOpen, onEdit, onDelete, onPay }) {
   const isBorc = debt.tip === 'Borç';
   return (
     <div style={{position:'relative'}}>
@@ -710,6 +1140,46 @@ function DebtItem({ debt, onToggleMenu, menuOpen, onEdit, onDelete }) {
         <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
           <span style={{fontSize:'17px', fontWeight:900, color: isBorc ? 'var(--danger)' : 'var(--success)'}}>₺{parseFloat(debt.miktar || 0).toLocaleString("tr-TR")}</span>
           <MoreVertical size={16} color="var(--text-dim)"/>
+        </div>
+      </div>
+      {menuOpen && (
+        <div className="dropdown-menu">
+          <button className="menu-item" style={{color:'var(--success)'}} onClick={(e) => { e.stopPropagation(); onPay(); }}><Wallet size={16}/> Öde/Tahsil Et</button>
+          <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
+          <button className="menu-item danger" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={16}/> Sil</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CardItem({ card, onToggleMenu, menuOpen, onEdit, onDelete }) {
+  const percentUsed = Math.min(100, (parseFloat(card.güncelBorç || 0) / parseFloat(card.limit || 1)) * 100);
+  return (
+    <div style={{position:'relative'}}>
+      <div className="list-item" onClick={onToggleMenu} style={{flexDirection:'column', alignItems:'stretch', gap:'12px'}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+          <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
+            <div className="icon-circle" style={{background:'rgba(168,85,247,0.1)', color:'var(--secondary)'}}><CardIcon size={22}/></div>
+            <div>
+              <h4 style={{fontSize:'15px', fontWeight:700}}>{card.ad}</h4>
+              <p style={{fontSize:'11px', color:'var(--text-dim)', fontWeight:600}}>{card.kod || 'Kredi Kartı'}</p>
+            </div>
+          </div>
+          <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+            <span style={{fontSize:'17px', fontWeight:900, color: 'var(--danger)'}}>₺{parseFloat(card.güncelBorç || 0).toLocaleString("tr-TR")}</span>
+            <MoreVertical size={16} color="var(--text-dim)"/>
+          </div>
+        </div>
+        
+        <div style={{marginTop:'4px'}}>
+          <div style={{display:'flex', justifyContent:'space-between', fontSize:'9px', fontWeight:800, color:'var(--text-dim)', marginBottom:'4px', textTransform:'uppercase'}}>
+            <span>Kullanım</span>
+            <span>Limit: ₺{parseFloat(card.limit || 0).toLocaleString("tr-TR")}</span>
+          </div>
+          <div style={{height:'4px', background:'rgba(255,255,255,0.05)', borderRadius:'2px', overflow:'hidden'}}>
+            <div style={{height:'100%', width:`${percentUsed}%`, background: percentUsed > 90 ? 'var(--danger)' : 'var(--secondary)', transition:'width 0.3s'}}></div>
+          </div>
         </div>
       </div>
       {menuOpen && (
