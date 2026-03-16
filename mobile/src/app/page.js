@@ -43,6 +43,7 @@ export default function UnifiedApp() {
   const [isDebtModalOpen, setIsDebtModalOpen] = useState(false);
   const [isCardModalOpen, setIsCardModalOpen] = useState(false);
   const [isDebtPayModalOpen, setIsDebtPayModalOpen] = useState(false);
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null); // { col, id, name }
   
   // Data State
@@ -67,7 +68,8 @@ export default function UnifiedApp() {
     tür: 'Gider',
     kategori: 'Market',
     varlık: '',
-    detaylar: []
+    detaylar: [],
+    bakiyeEtkilemez: false
   });
 
   const [newAsset, setNewAsset] = useState({
@@ -96,6 +98,12 @@ export default function UnifiedApp() {
     debtType: '', // 'Borç' or 'Alacak'
     amount: '',
     varlık: ''
+  });
+
+  const [transferState, setTransferState] = useState({
+    from: '',
+    to: '',
+    amount: ''
   });
 
   useEffect(() => {
@@ -191,29 +199,36 @@ export default function UnifiedApp() {
 
     try {
       await addDoc(collection(db, "harcamalar"), {
-        ...newTx,
+        açıklama: newTx.açıklama,
         fiyat: parseFloat(newTx.fiyat),
+        tür: newTx.tür,
+        kategori: newTx.kategori,
+        varlık: newTx.varlık,
+        detaylar: newTx.detaylar || [],
+        bakiye_etkilemez: newTx.bakiyeEtkilemez,
         tarih: serverTimestamp()
       });
       
-      // Update asset balance OR Credit Card debt
-      const asset = assets.find(a => a.ad === newTx.varlık);
-      const card = cards.find(c => c.ad === newTx.varlık);
+      if (!newTx.bakiyeEtkilemez) {
+        // Update asset balance OR Credit Card debt
+        const asset = assets.find(a => a.ad === newTx.varlık);
+        const card = cards.find(c => c.ad === newTx.varlık);
 
-      if (asset) {
-        const diff = newTx.tür === 'Gelir' ? parseFloat(newTx.fiyat) : -parseFloat(newTx.fiyat);
-        await updateDoc(doc(db, "varliklar", asset.id), {
-          bakiye: parseFloat(asset.bakiye || 0) + diff
-        });
-      } else if (card) {
-        // Expense on credit card increases debt, Income (e.g. payment) decreases it
-        const diff = newTx.tür === 'Gider' ? parseFloat(newTx.fiyat) : -parseFloat(newTx.fiyat);
-        await updateDoc(doc(db, "kredi_kartlari", card.id), {
-          güncelBorç: parseFloat(card.güncelBorç || 0) + diff
-        });
+        if (asset) {
+          const diff = newTx.tür === 'Gelir' ? parseFloat(newTx.fiyat) : -parseFloat(newTx.fiyat);
+          await updateDoc(doc(db, "varliklar", asset.id), {
+            bakiye: parseFloat(asset.bakiye || 0) + diff
+          });
+        } else if (card) {
+          // Expense on credit card increases debt, Income (e.g. payment) decreases it
+          const diff = newTx.tür === 'Gider' ? parseFloat(newTx.fiyat) : -parseFloat(newTx.fiyat);
+          await updateDoc(doc(db, "kredi_kartlari", card.id), {
+            güncelBorç: parseFloat(card.güncelBorç || 0) + diff
+          });
+        }
       }
 
-      setNewTx({ açıklama: '', fiyat: '', tür: 'Gider', kategori: 'Market', varlık: assets[0]?.ad || cards[0]?.ad || '', detaylar: [] });
+      setNewTx({ açıklama: '', fiyat: '', tür: 'Gider', kategori: 'Market', varlık: assets[0]?.ad || cards[0]?.ad || '', detaylar: [], bakiyeEtkilemez: false });
       setIsAddModalOpen(false);
     } catch (err) {
       alert("Hata: " + err.message);
@@ -232,6 +247,34 @@ export default function UnifiedApp() {
       setNewCard({ ad: '', kod: '', limit: '', güncelBorç: '' });
       setIsCardModalOpen(false);
     } catch (err) { alert("Hata: " + err.message); }
+  };
+
+  const handleTransfer = async (e) => {
+    e.preventDefault();
+    if (!transferState.from || !transferState.to || !transferState.amount) return;
+    if (transferState.from === transferState.to) {
+      alert("Aynı hesaba transfer yapılamaz.");
+      return;
+    }
+    
+    try {
+      const amt = parseFloat(transferState.amount);
+      const fromAsset = assets.find(a => a.ad === transferState.from);
+      const toAsset = assets.find(a => a.ad === transferState.to);
+      
+      if (fromAsset) {
+        await updateDoc(doc(db, "varliklar", fromAsset.id), { bakiye: parseFloat(fromAsset.bakiye || 0) - amt });
+      }
+      if (toAsset) {
+        await updateDoc(doc(db, "varliklar", toAsset.id), { bakiye: parseFloat(toAsset.bakiye || 0) + amt });
+      }
+      
+      setIsTransferModalOpen(false);
+      setTransferState({ from: '', to: '', amount: '' });
+      alert("Transfer başarılı!");
+    } catch (err) {
+      alert("Hata: " + err.message);
+    }
   };
 
   const handleAddAsset = async (e) => {
@@ -512,7 +555,10 @@ export default function UnifiedApp() {
             <div className="animate-slide-up">
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
                 <h3 style={{fontSize:'18px', fontWeight:900}}>VARLIKLARIM</h3>
-                <button className="btn-text" onClick={() => setIsAssetModalOpen(true)}>+ YENİ HESAP</button>
+                <div style={{display:'flex', gap:'8px'}}>
+                  <button className="btn-text" onClick={() => setIsTransferModalOpen(true)}>🔄 TRANSFER</button>
+                  <button className="btn-text" onClick={() => setIsAssetModalOpen(true)}>+ YENİ HESAP</button>
+                </div>
               </div>
               <div className="glass" style={{padding:'24px', marginBottom:'24px', background: 'linear-gradient(145deg, #1e1e2d 0%, #111119 100%)'}}>
                 <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'8px', marginBottom:'20px'}}>
@@ -708,6 +754,12 @@ export default function UnifiedApp() {
                     </optgroup>
                   </select>
                 </div>
+                
+                <div style={{display:'flex', alignItems:'center', gap:'8px', marginTop:'4px'}}>
+                  <input type="checkbox" id="bakiyeEtkilemez" checked={newTx.bakiyeEtkilemez} onChange={e => setNewTx({...newTx, bakiyeEtkilemez: e.target.checked})} style={{width:'16px', height:'16px'}} />
+                  <label htmlFor="bakiyeEtkilemez" style={{marginBottom:0, fontSize:'14px', color:'var(--text-dim)', fontWeight:600}}>Hesap Bakiyesine Etki Etmesin</label>
+                </div>
+
                 <button type="submit" className="btn-primary" style={{marginTop:'8px', marginBottom:'24px'}}>KAYDET</button>
               </form>
             </div>
@@ -950,7 +1002,6 @@ export default function UnifiedApp() {
           </div>
         )}
 
-        {/* Debt Payment Modal */}
         {isDebtPayModalOpen && (
           <div className="modal-overlay" onClick={() => setIsDebtPayModalOpen(false)}>
             <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
@@ -980,6 +1031,39 @@ export default function UnifiedApp() {
                 <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>
                   {payDebtState.debtType === 'Borç' ? 'ÖDEMEYİ TAMAMLA' : 'TAHSİLATI TAMAMLA'}
                 </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Transfer Modal */}
+        {isTransferModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsTransferModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Hesaplar Arası Transfer</h3>
+                <button onClick={() => setIsTransferModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              <form onSubmit={handleTransfer} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Gönderen Hesap</label>
+                  <select className="form-select" value={transferState.from} onChange={e => setTransferState({...transferState, from: e.target.value})} required>
+                    <option value="">Seçiniz</option>
+                    {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                  </select>
+                </div>
+                <div className="input-group">
+                  <label>Alan Hesap</label>
+                  <select className="form-select" value={transferState.to} onChange={e => setTransferState({...transferState, to: e.target.value})} required>
+                    <option value="">Seçiniz</option>
+                    {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                  </select>
+                </div>
+                <div className="input-group">
+                  <label>Miktar (TRY)</label>
+                  <input className="form-input" type="number" placeholder="0.00" value={transferState.amount} onChange={e => setTransferState({...transferState, amount: e.target.value})} required />
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>TRANSFER ET</button>
               </form>
             </div>
           </div>

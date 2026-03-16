@@ -8,7 +8,7 @@ import firebase_admin
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QFrame, QDateEdit, QTabWidget,
-                             QMessageBox, QProgressBar, QInputDialog, QGraphicsDropShadowEffect)
+                             QMessageBox, QProgressBar, QInputDialog, QGraphicsDropShadowEffect, QCheckBox)
 from PySide6.QtCore import Qt, QDate, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QIcon, QColor, QPalette, QBrush, QLinearGradient
 from qt_material import apply_stylesheet
@@ -191,6 +191,7 @@ class BudgetApp(QMainWindow):
 
         self.setup_transactions_tab()
         self.setup_assets_tab()
+        self.setup_transfer_tab()
         self.setup_recurring_tab()
         self.setup_reports_tab()
 
@@ -259,6 +260,8 @@ class BudgetApp(QMainWindow):
         self.date_input = QDateEdit(QDate.currentDate())
         self.date_input.setCalendarPopup(True)
         
+        self.exclude_balance_cb = QCheckBox("Hesap Bakiyesine Etki Etmesin")
+        
         add_btn = QPushButton("Ekle")
         add_btn.setMinimumHeight(38)
         add_btn.setStyleSheet("background-color: #3498db; color: white; font-weight: bold;")
@@ -270,6 +273,7 @@ class BudgetApp(QMainWindow):
         form_layout.addWidget(self.asset_input)
         form_layout.addWidget(self.cat_input)
         form_layout.addWidget(self.date_input)
+        form_layout.addWidget(self.exclude_balance_cb)
         form_layout.addWidget(add_btn)
         
         layout.addWidget(form_frame)
@@ -416,6 +420,79 @@ class BudgetApp(QMainWindow):
         self.load_assets()
         self.load_debts()
 
+    def setup_transfer_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        form_frame = QFrame()
+        form_frame.setStyleSheet("background-color: #2b2b3b; border-radius: 12px;")
+        form_layout = QHBoxLayout(form_frame)
+        form_layout.setContentsMargins(12, 12, 12, 12)
+
+        self.transfer_from = QComboBox()
+        self.transfer_from.setPlaceholderText("Gönderen Hesap")
+        
+        self.transfer_to = QComboBox()
+        self.transfer_to.setPlaceholderText("Alan Hesap")
+
+        self.transfer_amount = QLineEdit()
+        self.transfer_amount.setPlaceholderText("Miktar")
+
+        transfer_btn = QPushButton("Transfer Et")
+        transfer_btn.setStyleSheet("background-color: #3498db; color: white; font-weight: bold;")
+        transfer_btn.clicked.connect(self.process_transfer)
+
+        form_layout.addWidget(QLabel("Gönderen:"))
+        form_layout.addWidget(self.transfer_from)
+        form_layout.addWidget(QLabel("Alan:"))
+        form_layout.addWidget(self.transfer_to)
+        form_layout.addWidget(self.transfer_amount)
+        form_layout.addWidget(transfer_btn)
+
+        layout.addWidget(form_frame)
+        layout.addStretch()
+
+        self.tabs.addTab(tab, "Para Transferi")
+
+    def process_transfer(self):
+        from_id = self.transfer_from.currentData()
+        to_id = self.transfer_to.currentData()
+        amt_text = self.transfer_amount.text()
+
+        if not from_id or not to_id or not amt_text:
+            QMessageBox.warning(self, "Uyarı", "Lütfen tüm alanları doldurun.")
+            return
+
+        if from_id == to_id:
+            QMessageBox.warning(self, "Uyarı", "Aynı hesaba transfer yapılamaz.")
+            return
+
+        try:
+            amt = float(amt_text.replace(",", "."))
+            if amt <= 0: return
+
+            transaction = db.transaction()
+            from_ref = db.collection("varliklar").document(from_id)
+            to_ref = db.collection("varliklar").document(to_id)
+
+            @firestore.transactional
+            def p_trans(trx, f_ref, t_ref, v):
+                f_snap = f_ref.get(transaction=trx)
+                t_snap = t_ref.get(transaction=trx)
+                f_cur = f_snap.get("bakiye") if f_snap.exists else 0
+                t_cur = t_snap.get("bakiye") if t_snap.exists else 0
+
+                trx.update(f_ref, {"bakiye": f_cur - v})
+                trx.update(t_ref, {"bakiye": t_cur + v})
+
+            p_trans(transaction, from_ref, to_ref, amt)
+            self.transfer_amount.clear()
+            self.load_assets()
+            QMessageBox.information(self, "Başarılı", "Transfer gerçekleştirildi.")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", str(e))
+
     def setup_recurring_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -498,10 +575,16 @@ class BudgetApp(QMainWindow):
             docs = db.collection("varliklar").stream()
             self.asset_table.setRowCount(0); self.asset_list = []
             self.asset_input.clear()
+            if hasattr(self, 'transfer_from'):
+                self.transfer_from.clear()
+                self.transfer_to.clear()
             for doc in docs:
                 d = doc.to_dict(); d['id'] = doc.id
                 self.asset_list.append(d)
                 self.asset_input.addItem(d['ad'], d['id'])
+                if hasattr(self, 'transfer_from'):
+                    self.transfer_from.addItem(d['ad'], d['id'])
+                    self.transfer_to.addItem(d['ad'], d['id'])
                 
                 row = self.asset_table.rowCount()
                 self.asset_table.insertRow(row)
@@ -597,23 +680,30 @@ class BudgetApp(QMainWindow):
         ds = self.desc_input.text(); am = self.amount_input.text(); tp = self.type_input.currentText()
         as_id = self.asset_input.currentData(); as_nm = self.asset_input.currentText()
         if not as_id or not ds or not am: return
+        exclude_bal = self.exclude_balance_cb.isChecked()
         try:
             val = float(am.replace(",", "."))
             dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             data = {"açıklama": ds, "fiyat": abs(val), "varlık_id": as_id, "varlık_adı": as_nm, 
-                    "kategori": self.cat_input.currentText(), "tür": tp, "tarih": dt, "created_at": firestore.SERVER_TIMESTAMP}
+                    "kategori": self.cat_input.currentText(), "tür": tp, "tarih": dt, "created_at": firestore.SERVER_TIMESTAMP,
+                    "bakiye_etkilemez": exclude_bal}
             
-            transaction = db.transaction()
-            asset_ref = db.collection("varliklar").document(as_id)
-            @firestore.transactional
-            def update_bal(trx, ref, v, t):
-                snap = ref.get(transaction=trx)
-                cur = snap.get("bakiye") if snap.exists else 0
-                trx.update(ref, {"bakiye": cur + v if t == "Gelir" else cur - v})
+            if exclude_bal:
+                db.collection("harcamalar").add(data)
+            else:
+                transaction = db.transaction()
+                asset_ref = db.collection("varliklar").document(as_id)
+                @firestore.transactional
+                def update_bal(trx, ref, v, t):
+                    snap = ref.get(transaction=trx)
+                    cur = snap.get("bakiye") if snap.exists else 0
+                    trx.update(ref, {"bakiye": cur + (v if t == "Gelir" else -v)})
+                
+                update_bal(transaction, asset_ref, val, tp)
                 db.collection("harcamalar").add(data)
             
-            update_bal(transaction, asset_ref, val, tp)
             self.desc_input.clear(); self.amount_input.clear()
+            self.exclude_balance_cb.setChecked(False)
             self.load_data(); self.load_assets()
         except Exception as e: QMessageBox.critical(self, "Hata", str(e))
 
