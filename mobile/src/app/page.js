@@ -88,7 +88,8 @@ export default function UnifiedApp() {
     kategori: 'Market',
     varlık: '',
     detaylar: [],
-    bakiyeEtkilemez: false
+    bakiyeEtkilemez: false,
+    tarih: new Date().toISOString().split('T')[0]
   });
 
   const [newAsset, setNewAsset] = useState({
@@ -286,7 +287,7 @@ export default function UnifiedApp() {
         varlık: newTx.varlık,
         detaylar: newTx.detaylar || [],
         bakiye_etkilemez: newTx.bakiyeEtkilemez,
-        tarih: serverTimestamp()
+        tarih: new Date(newTx.tarih)
       });
       
       if (!newTx.bakiyeEtkilemez) {
@@ -503,7 +504,8 @@ export default function UnifiedApp() {
         ...(data.bakiye !== undefined && { bakiye: parseFloat(data.bakiye) }),
         ...(data.miktar !== undefined && { miktar: parseFloat(data.miktar) }),
         ...(data.güncelBorç !== undefined && { güncelBorç: parseFloat(data.güncelBorç) }),
-        ...(data.limit !== undefined && { limit: parseFloat(data.limit) })
+        ...(data.limit !== undefined && { limit: parseFloat(data.limit) }),
+        ...(data.selectedDate !== undefined && { tarih: new Date(data.selectedDate) }),
       });
       setEditingItem(null);
     } catch (err) { 
@@ -658,26 +660,24 @@ export default function UnifiedApp() {
                       </div>
                     </div>
                     
-                    <div style={{height: '240px', width:'100%', display:'flex', justifyContent:'center'}}>
+                    <div 
+                      className="chart-no-focus"
+                      onPointerDown={(e) => e.currentTarget.blur()}
+                      style={{height: '240px', width:'100%', display:'flex', justifyContent:'center', outline:'none'}}
+                    >
                       {balanceHistory.length > 0 ? (
                         viewMode === 'chart' ? (
                           <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={balanceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                            <AreaChart data={balanceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }} accessibilityLayer={false} tabIndex={-1}>
                               <defs>
                                 <linearGradient id="colorBakiye" x1="0" y1="0" x2="0" y2="1">
                                   <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.3}/>
                                   <stop offset="95%" stopColor="var(--primary)" stopOpacity={0}/>
                                 </linearGradient>
                               </defs>
-                              <XAxis 
-                                dataKey="date" 
-                                axisLine={false} 
-                                tickLine={false} 
-                                tick={{fill: 'var(--text-dim)', fontSize: 10, fontWeight: 700}}
-                                dy={10}
-                              />
-                              <YAxis hide domain={['dataMin - 1000', 'dataMax + 1000']} />
-                              <Tooltip content={<CustomTooltip />} />
+                              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: 'var(--text-dim)', fontSize: 10, fontWeight: 700}} dy={10} tabIndex={-1} />
+                              <YAxis hide domain={['dataMin - 1000', 'dataMax + 1000']} tabIndex={-1} />
+                              <Tooltip content={<CustomTooltip />} tabIndex={-1} pointerEvents="none" />
                               <Area 
                                 type="monotone" 
                                 dataKey="bakiye" 
@@ -687,26 +687,21 @@ export default function UnifiedApp() {
                                 fill="url(#colorBakiye)" 
                                 animationDuration={800}
                                 isAnimationActive={true}
+                                tabIndex={-1}
                               />
                             </AreaChart>
                           </ResponsiveContainer>
                         ) : (
                           <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={balanceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                            <BarChart data={balanceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }} accessibilityLayer={false} tabIndex={-1}>
                               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
-                              <XAxis 
-                                dataKey="date" 
-                                axisLine={false} 
-                                tickLine={false} 
-                                tick={{fill: 'var(--text-dim)', fontSize: 10, fontWeight: 700}}
-                                dy={10}
-                              />
-                              <YAxis hide />
-                              <Tooltip content={<CustomTooltip />} />
+                              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: 'var(--text-dim)', fontSize: 10, fontWeight: 700}} dy={10} tabIndex={-1} />
+                              <YAxis hide tabIndex={-1} />
+                              <Tooltip content={<CustomTooltip />} tabIndex={-1} pointerEvents="none" />
                               <ReferenceLine y={0} stroke="#666" strokeWidth={1} />
-                              <Bar dataKey="net" radius={[4, 4, 0, 0]}>
+                              <Bar dataKey="net" radius={[4, 4, 0, 0]} tabIndex={-1}>
                                 {balanceHistory.map((entry, index) => (
-                                  <Cell key={`cell-${index}`} fill={entry.net >= 0 ? 'var(--success)' : 'var(--danger)'} />
+                                  <Cell key={`cell-${index}`} fill={entry.net >= 0 ? 'var(--success)' : 'var(--danger)'} tabIndex={-1} />
                                 ))}
                               </Bar>
                             </BarChart>
@@ -867,6 +862,10 @@ export default function UnifiedApp() {
                 <div className="input-group">
                   <label>Açıklama</label>
                   <input className="form-input" placeholder="Market, Maaş, vb." value={newTx.açıklama} onChange={e => setNewTx({...newTx, açıklama: e.target.value})} required />
+                </div>
+                <div className="input-group">
+                  <label>Tarih</label>
+                  <input className="form-input" type="date" value={newTx.tarih} onChange={e => setNewTx({...newTx, tarih: e.target.value})} required />
                 </div>
                 <div className="flex gap-3">
                   <div className="input-group flex-1">
@@ -1081,6 +1080,17 @@ export default function UnifiedApp() {
                     <div className="input-group">
                       <label>Açıklama</label>
                       <input className="form-input" value={editingItem.açıklama} onChange={e => setEditingItem({...editingItem, açıklama: e.target.value})} />
+                    </div>
+                  )}
+                  {editingItem.tarih !== undefined && (
+                    <div className="input-group">
+                      <label>Tarih</label>
+                      <input 
+                        className="form-input" 
+                        type="date" 
+                        value={editingItem.selectedDate || (editingItem.tarih?.seconds ? new Date(editingItem.tarih.seconds * 1000).toISOString().split('T')[0] : '')} 
+                        onChange={e => setEditingItem({...editingItem, selectedDate: e.target.value})} 
+                      />
                     </div>
                   )}
                   {editingItem.isim !== undefined && (
