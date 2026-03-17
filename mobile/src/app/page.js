@@ -17,8 +17,22 @@ import {
   Edit2,
   MoreVertical,
   X,
-  CreditCard as CardIcon
+  CreditCard as CardIcon,
+  Calendar
 } from 'lucide-react';
+import { 
+  AreaChart, 
+  Area, 
+  BarChart,
+  Bar,
+  Cell,
+  ReferenceLine,
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer 
+} from 'recharts';
 import { db } from '@/lib/firebase';
 import { 
   collection, 
@@ -60,6 +74,11 @@ export default function UnifiedApp() {
     totalDebts: '0.00',
     totalReceivables: '0.00'
   });
+  const [rawBalance, setRawBalance] = useState(0);
+  const [balanceHistory, setBalanceHistory] = useState([]);
+  const [chartRange, setChartRange] = useState(7);
+  const [viewMode, setViewMode] = useState('chart'); // 'chart' or 'table'
+  const [mounted, setMounted] = useState(false);
 
   // Add Transaction Form State
   const [newTx, setNewTx] = useState({
@@ -145,6 +164,10 @@ export default function UnifiedApp() {
     return () => { unsubAssets(); unsubDebts(); unsubCards(); unsubTx(); };
   }, []);
 
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   // Standardize 'TL' to 'TRY' and 'Mutfak' to 'Market' in database
   useEffect(() => {
     assets.forEach(async (a) => {
@@ -179,6 +202,7 @@ export default function UnifiedApp() {
     const combinedDebt = totalBorc + totalCardDebt;
     const netWorth = totalTRY + totalAlacak - combinedDebt;
 
+    setRawBalance(netWorth);
     setStats({
       balance: netWorth.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
       income: inc.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
@@ -192,6 +216,62 @@ export default function UnifiedApp() {
       setNewTx(prev => ({ ...prev, varlık: assets[0].ad }));
     }
   }, [assets, transactions, debts, cards, usdRate]);
+
+  // Calculate Balance History for Chart
+  useEffect(() => {
+    if (transactions.length === 0) return;
+
+    const data = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    for (let i = chartRange - 1; i >= 0; i--) {
+      const targetDate = new Date(today);
+      targetDate.setDate(targetDate.getDate() - i);
+      const dateStr = targetDate.toLocaleDateString("tr-TR", { day: '2-digit', month: '2-digit' });
+
+      // Transactions on this specific day
+      const dailyTx = transactions.filter(tx => {
+        if (!tx.tarih) return false;
+        const seconds = tx.tarih.seconds || (tx.tarih.getTime ? tx.tarih.getTime() / 1000 : null);
+        if (!seconds) return false;
+        const txDate = new Date(seconds * 1000);
+        return txDate.toLocaleDateString("tr-TR") === targetDate.toLocaleDateString("tr-TR");
+      });
+
+      const dayIncome = dailyTx.filter(tx => tx.tür === 'Gelir').reduce((sum, tx) => sum + tx.fiyat, 0);
+      const dayExpense = dailyTx.filter(tx => tx.tür === 'Gider').reduce((sum, tx) => sum + tx.fiyat, 0);
+
+      // Transactions that happened strictly AFTER this day's end
+      // To get the balance AT THE END of 'targetDate', we need to subtract transactions 
+      // that happened between targetDate and now.
+      const targetEnd = new Date(targetDate);
+      targetEnd.setHours(23, 59, 59, 999);
+
+      const futureTransactions = transactions.filter(tx => {
+        if (!tx.tarih || tx.bakiye_etkilemez) return false;
+        const seconds = tx.tarih.seconds || (tx.tarih.getTime ? tx.tarih.getTime() / 1000 : null);
+        if (!seconds) return false;
+        const txDate = new Date(seconds * 1000);
+        return txDate > targetEnd;
+      });
+
+      const netAdjustment = futureTransactions.reduce((acc, tx) => {
+        const amt = tx.fiyat;
+        return tx.tür === 'Gelir' ? acc - amt : acc + amt;
+      }, 0);
+
+      data.push({
+        date: dateStr,
+        fullDate: targetDate.toLocaleDateString("tr-TR"),
+        bakiye: Math.round(rawBalance + netAdjustment),
+        gelir: dayIncome,
+        gider: dayExpense,
+        net: dayIncome - dayExpense
+      });
+    }
+    setBalanceHistory(data);
+  }, [rawBalance, transactions, chartRange]);
 
   const handleAddTransaction = async (e) => {
     e.preventDefault();
@@ -528,6 +608,118 @@ export default function UnifiedApp() {
                     </div>
                   </div>
                 </div>
+
+                {mounted && (
+                  <div className="glass chart-container" style={{marginTop:'16px', padding:'20px'}}>
+                    <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'20px', flexWrap:'wrap', gap:'12px'}}>
+                      <div>
+                        <h4 style={{fontSize:'14px', fontWeight:900, color:'var(--text-dim)'}}>VERİ ANALİZİ</h4>
+                        <div style={{display:'flex', gap:'8px', marginTop:'8px'}}>
+                          <button 
+                            onClick={() => setViewMode('chart')}
+                            className="btn-text"
+                            style={{
+                              padding:'4px 12px', fontSize:'9px', fontWeight:900,
+                              background: viewMode === 'chart' ? 'var(--primary)' : 'rgba(255,255,255,0.05)',
+                              color: viewMode === 'chart' ? 'white' : 'var(--text-dim)',
+                              borderRadius: '6px'
+                            }}
+                          >BAKİYE</button>
+                          <button 
+                            onClick={() => setViewMode('table')}
+                            className="btn-text"
+                            style={{
+                              padding:'4px 12px', fontSize:'9px', fontWeight:900,
+                              background: viewMode === 'table' ? 'var(--primary)' : 'rgba(255,255,255,0.05)',
+                              color: viewMode === 'table' ? 'white' : 'var(--text-dim)',
+                              borderRadius: '6px'
+                            }}
+                          >KAZANÇ</button>
+                        </div>
+                      </div>
+                      <div style={{display:'flex', gap:'4px'}}>
+                        {[7, 14, 30].map(d => (
+                          <button 
+                            key={d} 
+                            onClick={() => setChartRange(d)}
+                            className="btn-text" 
+                            style={{
+                              padding:'4px 12px', 
+                              fontSize:'9px',
+                              background: chartRange === d ? 'rgba(79, 135, 255, 0.2)' : 'rgba(79, 135, 255, 0.05)',
+                              color: 'var(--primary)',
+                              borderRadius: '8px',
+                              border: chartRange === d ? '1px solid var(--primary)' : '1px solid transparent'
+                            }}
+                          >
+                            {d}G
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    
+                    <div style={{height: '240px', width:'100%', display:'flex', justifyContent:'center'}}>
+                      {balanceHistory.length > 0 ? (
+                        viewMode === 'chart' ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={balanceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                              <defs>
+                                <linearGradient id="colorBakiye" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.3}/>
+                                  <stop offset="95%" stopColor="var(--primary)" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <XAxis 
+                                dataKey="date" 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: 'var(--text-dim)', fontSize: 10, fontWeight: 700}}
+                                dy={10}
+                              />
+                              <YAxis hide domain={['dataMin - 1000', 'dataMax + 1000']} />
+                              <Tooltip content={<CustomTooltip />} />
+                              <Area 
+                                type="monotone" 
+                                dataKey="bakiye" 
+                                stroke="var(--primary)" 
+                                strokeWidth={3}
+                                fillOpacity={1} 
+                                fill="url(#colorBakiye)" 
+                                animationDuration={800}
+                                isAnimationActive={true}
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={balanceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
+                              <XAxis 
+                                dataKey="date" 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: 'var(--text-dim)', fontSize: 10, fontWeight: 700}}
+                                dy={10}
+                              />
+                              <YAxis hide />
+                              <Tooltip content={<CustomTooltip />} />
+                              <ReferenceLine y={0} stroke="#666" strokeWidth={1} />
+                              <Bar dataKey="net" radius={[4, 4, 0, 0]}>
+                                {balanceHistory.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={entry.net >= 0 ? 'var(--success)' : 'var(--danger)'} />
+                                ))}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        )
+                      ) : (
+                        <div style={{height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-dim)', fontSize:'12px', textAlign:'center'}}>
+                          Hesaplanıyor...
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="recent-section" style={{marginTop:'40px'}}>
@@ -553,11 +745,11 @@ export default function UnifiedApp() {
 
           {activeTab === 'wallet' && (
             <div className="animate-slide-up">
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
-                <h3 style={{fontSize:'18px', fontWeight:900}}>VARLIKLARIM</h3>
-                <div style={{display:'flex', gap:'8px'}}>
-                  <button className="btn-text" onClick={() => setIsTransferModalOpen(true)}>🔄 TRANSFER</button>
-                  <button className="btn-text" onClick={() => setIsAssetModalOpen(true)}>+ YENİ HESAP</button>
+              <div className="wallet-header" style={{ marginBottom:'24px', padding:'0 4px' }}>
+                <h3 style={{fontSize:'22px', fontWeight:900, color:'white'}}>VARLIKLARIM</h3>
+                <div style={{display:'flex', gap:'10px', flexWrap:'wrap'}}>
+                  <button className="btn-text" style={{padding:'10px 18px', fontSize:'11px', fontWeight:900}} onClick={() => setIsTransferModalOpen(true)}>🔄 TRANSFER</button>
+                  <button className="btn-text" style={{padding:'10px 18px', fontSize:'11px', fontWeight:900}} onClick={() => setIsAssetModalOpen(true)}>+ YENİ HESAP</button>
                 </div>
               </div>
               <div className="glass" style={{padding:'24px', marginBottom:'24px', background: 'linear-gradient(145deg, #1e1e2d 0%, #111119 100%)'}}>
@@ -1102,6 +1294,36 @@ export default function UnifiedApp() {
       </main>
     </div>
   );
+}
+
+function CustomTooltip({ active, payload, label }) {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div className="glass" style={{padding:'12px', border:'1px solid var(--primary)', background:'rgba(26, 26, 36, 0.95)', backdropFilter:'blur(10px)', zIndex: 10000}}>
+        <p style={{fontSize:'11px', fontWeight:800, color:'var(--text-dim)', marginBottom:'8px'}}>{data.fullDate}</p>
+        <div className="flex-col" style={{gap:'4px'}}>
+          <div style={{display:'flex', justifyContent:'space-between', gap:'20px'}}>
+            <span style={{fontSize:'12px', fontWeight:700}}>Bakiye:</span>
+            <span style={{fontSize:'12px', fontWeight:900, color:'var(--primary)'}}>₺{data.bakiye.toLocaleString("tr-TR")}</span>
+          </div>
+          {data.gelir > 0 && (
+            <div style={{display:'flex', justifyContent:'space-between', gap:'20px'}}>
+              <span style={{fontSize:'10px', fontWeight:700, color:'var(--success)'}}>Gelir:</span>
+              <span style={{fontSize:'10px', fontWeight:800, color:'var(--success)'}}>+₺{data.gelir.toLocaleString("tr-TR")}</span>
+            </div>
+          )}
+          {data.gider > 0 && (
+            <div style={{display:'flex', justifyContent:'space-between', gap:'20px'}}>
+              <span style={{fontSize:'10px', fontWeight:700, color:'var(--danger)'}}>Gider:</span>
+              <span style={{fontSize:'10px', fontWeight:800, color:'var(--danger)'}}>-₺{data.gider.toLocaleString("tr-TR")}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return null;
 }
 
 function NavItem({ icon, label, active, onClick }) {
