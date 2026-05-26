@@ -1,0 +1,1616 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { 
+  Wallet, 
+  ArrowUpCircle, 
+  ArrowDownCircle, 
+  Plus, 
+  CreditCard, 
+  History, 
+  Settings,
+  TrendingDown,
+  TrendingUp,
+  LayoutGrid,
+  ChevronRight,
+  Trash2,
+  Edit2,
+  MoreVertical,
+  X,
+  CreditCard as CardIcon,
+  Calendar
+} from 'lucide-react';
+import { 
+  AreaChart, 
+  Area, 
+  BarChart,
+  Bar,
+  Cell,
+  ReferenceLine,
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer 
+} from 'recharts';
+import { db } from '@/lib/firebase';
+import { 
+  collection, 
+  query, 
+  orderBy, 
+  limit, 
+  onSnapshot,
+  deleteDoc,
+  doc,
+  updateDoc,
+  addDoc,
+  serverTimestamp
+} from 'firebase/firestore';
+
+export default function UnifiedApp() {
+  const [isClient, setIsClient] = useState(false);
+  const [activeTab, setActiveTab] = useState('home');
+  const [menuOpenId, setMenuOpenId] = useState(null);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
+  const [isAssetModalOpen, setIsAssetModalOpen] = useState(false);
+  const [isDebtModalOpen, setIsDebtModalOpen] = useState(false);
+  const [isCardModalOpen, setIsCardModalOpen] = useState(false);
+  const [isDebtPayModalOpen, setIsDebtPayModalOpen] = useState(false);
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null); // { col, id, name }
+  
+  // Data State
+  const [assets, setAssets] = useState([]);
+  const [debts, setDebts] = useState([]);
+  const [cards, setCards] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [usdRate, setUsdRate] = useState(0);
+  const [stats, setStats] = useState({ 
+    balance: '0.00', 
+    income: '0.00', 
+    expense: '0.00',
+    totalAssets: '0.00',
+    totalDebts: '0.00',
+    totalReceivables: '0.00'
+  });
+  const [rawBalance, setRawBalance] = useState(0);
+  const [balanceHistory, setBalanceHistory] = useState([]);
+  const [chartRange, setChartRange] = useState(7);
+  const [viewMode, setViewMode] = useState('chart'); // 'chart' or 'table'
+  const [rangeTotals, setRangeTotals] = useState({ gelir: 0, gider: 0 });
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  // chartRange controls the preset date range (7,14,30,90,180,365)
+  const [mounted, setMounted] = useState(false);
+
+  // Add Transaction Form State
+  const [newTx, setNewTx] = useState({
+    açıklama: '',
+    fiyat: '',
+    tür: 'Gider',
+    kategori: 'Market',
+    varlık: '',
+    detaylar: [],
+    bakiyeEtkilemez: false,
+    tarih: new Date().toISOString().split('T')[0]
+  });
+
+  const [newAsset, setNewAsset] = useState({
+    ad: '',
+    bakiye: '',
+    birim: 'TRY'
+  });
+
+  const [newDebt, setNewDebt] = useState({
+    isim: '',
+    miktar: '',
+    tip: 'Borç',
+    vade: ''
+  });
+
+  const [newCard, setNewCard] = useState({
+    ad: '',
+    kod: '', // e.g. "VISA-1234"
+    limit: '',
+    güncelBorç: ''
+  });
+
+  const [payDebtState, setPayDebtState] = useState({
+    debtId: '',
+    debtName: '',
+    debtType: '', // 'Borç' or 'Alacak'
+    amount: '',
+    varlık: ''
+  });
+
+  const [transferState, setTransferState] = useState({
+    from: '',
+    to: '',
+    amount: ''
+  });
+
+  useEffect(() => {
+    setIsClient(true);
+    // Currency API
+    fetch("https://api.exchangerate-api.com/v4/latest/USD")
+      .then(res => res.json())
+      .then(data => setUsdRate(data.rates.TRY))
+      .catch(() => setUsdRate(32.5)); // Fallback
+
+    const unsubAssets = onSnapshot(query(collection(db, "varliklar")), (snap) => {
+      setAssets(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    const unsubDebts = onSnapshot(query(collection(db, "borclar")), (snap) => {
+      setDebts(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    const unsubCards = onSnapshot(query(collection(db, "kredi_kartlari")), (snap) => {
+      setCards(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    // Load all transactions (remove hard limit so older entries are available in the UI)
+    const unsubTx = onSnapshot(query(collection(db, "harcamalar"), orderBy("tarih", "desc")), (snap) => {
+      setTransactions(snap.docs.map(doc => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          açıklama: d.açıklama || d.description || "İsimsiz",
+          fiyat: parseFloat(d.fiyat || d.price || 0),
+          kategori: d.kategori || d.category || "Genel",
+          tür: d.tür || d.type || "Gider",
+          varlık: d.varlık || d.asset || "",
+          detaylar: d.detaylar || [],
+          tarih: d.tarih,
+          // Normalize date to a JS Date for reliable comparisons (handles Firestore Timestamp, ISO string, or Date)
+          tarihDate: d.tarih && d.tarih.seconds ? new Date(d.tarih.seconds * 1000) : (d.tarih && d.tarih.toDate ? d.tarih.toDate() : (d.tarih ? new Date(d.tarih) : null))
+        };
+      }));
+    });
+
+    return () => { unsubAssets(); unsubDebts(); unsubCards(); unsubTx(); };
+  }, []);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Standardize 'TL' to 'TRY' and 'Mutfak' to 'Market' in database
+  useEffect(() => {
+    assets.forEach(async (a) => {
+      if (a.birim === "TL") {
+        try {
+          await updateDoc(doc(db, "varliklar", a.id), { birim: "TRY" });
+        } catch (err) { console.error("Standardization error:", err); }
+      }
+    });
+    transactions.forEach(async (t) => {
+      if (t.kategori === "Mutfak") {
+        try {
+          await updateDoc(doc(db, "harcamalar", t.id), { kategori: "Market" });
+        } catch (err) { console.error("Migration error:", err); }
+      }
+    });
+  }, [assets, transactions]);
+
+  useEffect(() => {
+    let totalTRY = 0;
+    assets.forEach(a => {
+      const val = parseFloat(a.bakiye || 0);
+      totalTRY += (a.birim === "USD") ? val * (usdRate || 1) : val;
+    });
+
+    const inc = transactions.filter(t => t.tür === 'Gelir').reduce((s, t) => s + t.fiyat, 0);
+    const exp = transactions.filter(t => t.tür === 'Gider').reduce((s, t) => s + t.fiyat, 0);
+    const totalBorc = debts.filter(d => d.tip === 'Borç').reduce((s, d) => s + parseFloat(d.miktar || 0), 0);
+    const totalAlacak = debts.filter(d => d.tip === 'Alacak').reduce((s, d) => s + parseFloat(d.miktar || 0), 0);
+    const totalCardDebt = cards.reduce((s, c) => s + parseFloat(c.güncelBorç || 0), 0);
+    
+    const combinedDebt = totalBorc + totalCardDebt;
+    const netWorth = totalTRY + totalAlacak - combinedDebt;
+
+    setRawBalance(netWorth);
+    setStats({
+      balance: netWorth.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      income: inc.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      expense: exp.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      totalAssets: totalTRY.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      totalDebts: combinedDebt.toLocaleString("tr-TR", { minimumFractionDigits: 2 }),
+      totalReceivables: totalAlacak.toLocaleString("tr-TR", { minimumFractionDigits: 2 })
+    });
+
+    if (assets.length > 0 && !newTx.varlık) {
+      setNewTx(prev => ({ ...prev, varlık: assets[0].ad }));
+    }
+  }, [assets, transactions, debts, cards, usdRate]);
+
+  // Calculate Balance History for Chart
+  useEffect(() => {
+    if (transactions.length === 0) return;
+
+    const data = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let rangeStart, rangeEnd;
+    if (customStart && customEnd) {
+      rangeStart = new Date(customStart);
+      rangeEnd = new Date(customEnd);
+    } else {
+      rangeStart = new Date(today);
+      rangeStart.setDate(rangeStart.getDate() - (chartRange - 1));
+      rangeEnd = new Date(today);
+    }
+    rangeStart.setHours(0, 0, 0, 0);
+    rangeEnd.setHours(0, 0, 0, 0);
+
+    const dayCount = Math.round((rangeEnd - rangeStart) / (1000 * 60 * 60 * 24)) + 1;
+    if (dayCount <= 0 || dayCount > 730) return;
+
+    for (let i = 0; i < dayCount; i++) {
+      const targetDate = new Date(rangeStart);
+      targetDate.setDate(targetDate.getDate() + i);
+      const dateStr = targetDate.toLocaleDateString("tr-TR", { day: '2-digit', month: '2-digit' });
+
+      // Transactions on this specific day
+      const dailyTx = transactions.filter(tx => {
+        const txDate = tx.tarihDate || (tx.tarih && tx.tarih.toDate ? tx.tarih.toDate() : (tx.tarih ? new Date(tx.tarih) : null));
+        if (!txDate) return false;
+        return txDate.toLocaleDateString("tr-TR") === targetDate.toLocaleDateString("tr-TR");
+      });
+
+      const dayIncome = dailyTx.filter(tx => tx.tür === 'Gelir').reduce((sum, tx) => sum + tx.fiyat, 0);
+      const dayExpense = dailyTx.filter(tx => tx.tür === 'Gider').reduce((sum, tx) => sum + tx.fiyat, 0);
+
+      const targetEnd = new Date(targetDate);
+      targetEnd.setHours(23, 59, 59, 999);
+
+      const futureTransactions = transactions.filter(tx => {
+        if (!tx.tarih || tx.bakiye_etkilemez) return false;
+        const txDate = tx.tarihDate || (tx.tarih && tx.tarih.toDate ? tx.tarih.toDate() : (tx.tarih ? new Date(tx.tarih) : null));
+        if (!txDate) return false;
+        return txDate > targetEnd;
+      });
+
+      const netAdjustment = futureTransactions.reduce((acc, tx) => {
+        const amt = tx.fiyat;
+        return tx.tür === 'Gelir' ? acc - amt : acc + amt;
+      }, 0);
+
+      data.push({
+        date: dateStr,
+        fullDate: targetDate.toLocaleDateString("tr-TR"),
+        bakiye: Math.round(rawBalance + netAdjustment),
+        gelir: dayIncome,
+        gider: dayExpense,
+        net: dayIncome - dayExpense
+      });
+    }
+    setBalanceHistory(data);
+  }, [rawBalance, transactions, chartRange, customStart, customEnd]);
+
+  // Compute total income/expense for the selected range (preset or custom)
+  useEffect(() => {
+    if (transactions.length === 0) {
+      setRangeTotals({ gelir: 0, gider: 0 });
+      return;
+    }
+
+    let startOfRange, endOfRange;
+    if (customStart && customEnd) {
+      startOfRange = new Date(customStart);
+      startOfRange.setHours(0, 0, 0, 0);
+      endOfRange = new Date(customEnd);
+      endOfRange.setHours(23, 59, 59, 999);
+    } else {
+      endOfRange = new Date();
+      endOfRange.setHours(23, 59, 59, 999);
+      startOfRange = new Date();
+      startOfRange.setHours(0, 0, 0, 0);
+      startOfRange.setDate(startOfRange.getDate() - (chartRange - 1));
+    }
+
+    let inc = 0;
+    let exp = 0;
+
+    transactions.forEach(tx => {
+      const txDate = tx.tarihDate || (tx.tarih && tx.tarih.toDate ? tx.tarih.toDate() : (tx.tarih ? new Date(tx.tarih) : null));
+      if (!txDate) return;
+      if (txDate >= startOfRange && txDate <= endOfRange) {
+        if (tx.tür === 'Gelir') inc += tx.fiyat;
+        if (tx.tür === 'Gider') exp += tx.fiyat;
+      }
+    });
+
+    setRangeTotals({ gelir: inc, gider: exp });
+  }, [transactions, chartRange, customStart, customEnd]);
+
+  const handleAddTransaction = async (e) => {
+    e.preventDefault();
+    if (!newTx.açıklama || !newTx.fiyat) return;
+
+    try {
+      await addDoc(collection(db, "harcamalar"), {
+        açıklama: newTx.açıklama,
+        fiyat: parseFloat(newTx.fiyat),
+        tür: newTx.tür,
+        kategori: newTx.kategori,
+        varlık: newTx.varlık,
+        detaylar: newTx.detaylar || [],
+        bakiye_etkilemez: newTx.bakiyeEtkilemez,
+        tarih: new Date(newTx.tarih)
+      });
+      
+      if (!newTx.bakiyeEtkilemez) {
+        // Update asset balance OR Credit Card debt
+        const asset = assets.find(a => a.ad === newTx.varlık);
+        const card = cards.find(c => c.ad === newTx.varlık);
+
+        if (asset) {
+          const diff = newTx.tür === 'Gelir' ? parseFloat(newTx.fiyat) : -parseFloat(newTx.fiyat);
+          await updateDoc(doc(db, "varliklar", asset.id), {
+            bakiye: parseFloat(asset.bakiye || 0) + diff
+          });
+        } else if (card) {
+          // Expense on credit card increases debt, Income (e.g. payment) decreases it
+          const diff = newTx.tür === 'Gider' ? parseFloat(newTx.fiyat) : -parseFloat(newTx.fiyat);
+          await updateDoc(doc(db, "kredi_kartlari", card.id), {
+            güncelBorç: parseFloat(card.güncelBorç || 0) + diff
+          });
+        }
+      }
+
+      setNewTx({ açıklama: '', fiyat: '', tür: 'Gider', kategori: 'Market', varlık: assets[0]?.ad || cards[0]?.ad || '', detaylar: [], bakiyeEtkilemez: false });
+      setIsAddModalOpen(false);
+    } catch (err) {
+      alert("Hata: " + err.message);
+    }
+  };
+
+  const handleAddCard = async (e) => {
+    e.preventDefault();
+    if (!newCard.ad || !newCard.limit) return;
+    try {
+      await addDoc(collection(db, "kredi_kartlari"), {
+        ...newCard,
+        limit: parseFloat(newCard.limit),
+        güncelBorç: parseFloat(newCard.güncelBorç || 0)
+      });
+      setNewCard({ ad: '', kod: '', limit: '', güncelBorç: '' });
+      setIsCardModalOpen(false);
+    } catch (err) { alert("Hata: " + err.message); }
+  };
+
+  const handleTransfer = async (e) => {
+    e.preventDefault();
+    if (!transferState.from || !transferState.to || !transferState.amount) return;
+    if (transferState.from === transferState.to) {
+      alert("Aynı hesaba transfer yapılamaz.");
+      return;
+    }
+    
+    try {
+      const amt = parseFloat(transferState.amount);
+      const fromAsset = assets.find(a => a.ad === transferState.from);
+      const toAsset = assets.find(a => a.ad === transferState.to);
+      
+      if (fromAsset) {
+        await updateDoc(doc(db, "varliklar", fromAsset.id), { bakiye: parseFloat(fromAsset.bakiye || 0) - amt });
+      }
+      if (toAsset) {
+        await updateDoc(doc(db, "varliklar", toAsset.id), { bakiye: parseFloat(toAsset.bakiye || 0) + amt });
+      }
+      
+      setIsTransferModalOpen(false);
+      setTransferState({ from: '', to: '', amount: '' });
+      alert("Transfer başarılı!");
+    } catch (err) {
+      alert("Hata: " + err.message);
+    }
+  };
+
+  const handleAddAsset = async (e) => {
+    e.preventDefault();
+    if (!newAsset.ad || !newAsset.bakiye) return;
+    try {
+      await addDoc(collection(db, "varliklar"), {
+        ...newAsset,
+        bakiye: parseFloat(newAsset.bakiye)
+      });
+      setNewAsset({ ad: '', bakiye: '', birim: 'TRY' });
+      setIsAssetModalOpen(false);
+    } catch (err) { alert("Hata: " + err.message); }
+  };
+
+  const handleAddDebt = async (e) => {
+    e.preventDefault();
+    if (!newDebt.isim || !newDebt.miktar) return;
+    try {
+      await addDoc(collection(db, "borclar"), {
+        ...newDebt,
+        miktar: parseFloat(newDebt.miktar)
+      });
+      setNewDebt({ isim: '', miktar: '', tip: 'Borç', vade: '' });
+      setIsDebtModalOpen(false);
+    } catch (err) { alert("Hata: " + err.message); }
+  };
+
+  const handlePayDebt = async (e) => {
+    e.preventDefault();
+    if (!payDebtState.amount || !payDebtState.varlık) return;
+
+    try {
+      const amount = parseFloat(payDebtState.amount);
+      const debt = debts.find(d => d.id === payDebtState.debtId);
+      const isBorc = debt?.tip === 'Borç';
+      
+      // 1. Update Debt amount
+      const newDebtMiktar = parseFloat(debt.miktar || 0) - amount;
+      if (newDebtMiktar <= 0) {
+        await deleteDoc(doc(db, "borclar", debt.id));
+      } else {
+        await updateDoc(doc(db, "borclar", debt.id), { miktar: newDebtMiktar });
+      }
+
+      // 2. Register a transaction
+      await addDoc(collection(db, "harcamalar"), {
+        açıklama: `${debt.isim} - ${isBorc ? 'Borç Ödemesi' : 'Alacak Tahsili'}`,
+        fiyat: amount,
+        tür: isBorc ? 'Gider' : 'Gelir',
+        kategori: 'Diğer',
+        varlık: payDebtState.varlık,
+        tarih: serverTimestamp()
+      });
+
+      // 3. Update account balance
+      const asset = assets.find(a => a.ad === payDebtState.varlık);
+      const card = cards.find(c => c.ad === payDebtState.varlık);
+
+      if (asset) {
+        const diff = isBorc ? -amount : amount;
+        await updateDoc(doc(db, "varliklar", asset.id), {
+          bakiye: parseFloat(asset.bakiye || 0) + diff
+        });
+      } else if (card) {
+        // If it's a debt payment using credit card (indirectly increasing card debt)
+        // Or if it's receiving money to credit card (decreasing card debt)
+        const diff = isBorc ? amount : -amount;
+        await updateDoc(doc(db, "kredi_kartlari", card.id), {
+          güncelBorç: parseFloat(card.güncelBorç || 0) + diff
+        });
+      }
+
+      setIsDebtPayModalOpen(false);
+      setPayDebtState({ debtId: '', debtName: '', amount: '', varlık: '' });
+    } catch (err) { alert("Hata: " + err.message); }
+  };
+
+  const handleEditItem = async (e) => {
+    e.preventDefault();
+    const { col, id, ...data } = editingItem;
+    const originalItem = [...assets, ...transactions, ...debts, ...cards].find(x => x.id === id);
+
+    try {
+      if (col === 'harcamalar' && originalItem) {
+        const oldFiyat = parseFloat(originalItem.fiyat || 0);
+        const newFiyat = parseFloat(data.fiyat || 0);
+        const oldVarlikName = originalItem.varlık || originalItem.asset || "";
+        const newVarlikName = data.varlık;
+        
+        const oldIsExpense = originalItem.tür === 'Gider';
+        const newIsExpense = (data.tür || originalItem.tür) === 'Gider';
+
+        // 1. Revert old balance
+        const oldAccount = assets.find(a => a.ad === oldVarlikName) || cards.find(c => c.ad === oldVarlikName);
+        if (oldAccount) {
+          const isCard = cards.some(c => c.id === oldAccount.id);
+          const revertDiff = oldIsExpense ? oldFiyat : -oldFiyat; 
+          
+          if (isCard) {
+            await updateDoc(doc(db, "kredi_kartlari", oldAccount.id), {
+              güncelBorç: parseFloat(oldAccount.güncelBorç || 0) - revertDiff
+            });
+          } else {
+            const currentBakiye = parseFloat(oldAccount.bakiye || 0);
+            await updateDoc(doc(db, "varliklar", oldAccount.id), {
+              bakiye: currentBakiye + revertDiff
+            });
+          }
+        }
+
+        // 2. Apply new balance
+        const targetVarlikName = newVarlikName || oldVarlikName;
+        const newAccount = assets.find(a => a.ad === targetVarlikName) || cards.find(c => c.ad === targetVarlikName);
+        
+        if (newAccount) {
+          const isCard = cards.some(c => c.id === newAccount.id);
+          const applyDiff = newIsExpense ? newFiyat : -newFiyat;
+          
+          let baseBalance;
+          if (newAccount.ad === oldVarlikName) {
+            // Re-fetch logic (local sync): account for reversion just performed
+            const revertDiff = oldIsExpense ? oldFiyat : -oldFiyat;
+            baseBalance = isCard 
+              ? parseFloat(newAccount.güncelBorç || 0) - revertDiff
+              : parseFloat(newAccount.bakiye || 0) + revertDiff;
+          } else {
+            baseBalance = isCard ? parseFloat(newAccount.güncelBorç || 0) : parseFloat(newAccount.bakiye || 0);
+          }
+
+          if (isCard) {
+            await updateDoc(doc(db, "kredi_kartlari", newAccount.id), {
+              güncelBorç: baseBalance + applyDiff
+            });
+          } else {
+            await updateDoc(doc(db, "varliklar", newAccount.id), {
+              bakiye: baseBalance - applyDiff
+            });
+          }
+        }
+      }
+
+      await updateDoc(doc(db, col, id), {
+        ...data,
+        ...(data.fiyat !== undefined && { fiyat: parseFloat(data.fiyat) }),
+        ...(data.bakiye !== undefined && { bakiye: parseFloat(data.bakiye) }),
+        ...(data.miktar !== undefined && { miktar: parseFloat(data.miktar) }),
+        ...(data.güncelBorç !== undefined && { güncelBorç: parseFloat(data.güncelBorç) }),
+        ...(data.limit !== undefined && { limit: parseFloat(data.limit) }),
+        ...(data.selectedDate !== undefined && { tarih: new Date(data.selectedDate) }),
+      });
+      setEditingItem(null);
+    } catch (err) { 
+      console.error(err);
+      alert("Hata: " + err.message); 
+    }
+  };
+
+  const deleteItem = async (col, id) => {
+    const item = [...assets, ...transactions, ...debts, ...cards].find(x => x.id === id);
+    setConfirmDelete({ col, id, name: item?.ad || item?.açıklama || item?.isim || 'bu öğe' });
+    setMenuOpenId(null);
+  };
+
+  const executeDelete = async () => {
+    if (!confirmDelete) return;
+    try {
+      const { col, id } = confirmDelete;
+      const originalItem = [...assets, ...transactions, ...debts, ...cards].find(x => x.id === id);
+
+      // Revert balances if deleting a transaction
+      if (col === 'harcamalar' && originalItem) {
+        const amount = parseFloat(originalItem.fiyat || 0);
+        const varlikName = originalItem.varlık || originalItem.asset;
+        const isExpense = originalItem.tür === 'Gider';
+        
+        const account = assets.find(a => a.ad === varlikName) || cards.find(c => c.ad === varlikName);
+        if (account) {
+          const isCard = cards.some(c => c.id === account.id);
+          const revertDiff = isExpense ? amount : -amount;
+          
+          if (isCard) {
+            await updateDoc(doc(db, "kredi_kartlari", account.id), {
+              güncelBorç: parseFloat(account.güncelBorç || 0) - revertDiff
+            });
+          } else {
+            await updateDoc(doc(db, "varliklar", account.id), {
+              bakiye: parseFloat(account.bakiye || 0) + revertDiff
+            });
+          }
+        }
+      }
+
+      await deleteDoc(doc(db, col, id));
+      setConfirmDelete(null);
+    } catch (err) {
+      alert("Hata: " + err.message);
+    }
+  };
+
+  if (!isClient) return null;
+
+  return (
+    <div className="app-wrapper" onClick={() => setMenuOpenId(null)}>
+      
+      {/* Sidebar for Desktop */}
+      <aside className="sidebar">
+        <h1 style={{fontSize:'24px', fontWeight:900}}>Finansçım</h1>
+        <nav className="flex-col gap-4">
+          <SidebarItem active={activeTab==='home'} onClick={()=>setActiveTab('home')} icon={<LayoutGrid/>} label="Ana Panel"/>
+          <SidebarItem active={activeTab==='wallet'} onClick={()=>setActiveTab('wallet')} icon={<CardIcon/>} label="Varlıklar"/>
+          <SidebarItem active={activeTab==='history'} onClick={()=>setActiveTab('history')} icon={<History/>} label="İşlemler"/>
+          <SidebarItem active={activeTab==='debts'} onClick={()=>setActiveTab('debts')} icon={<TrendingDown/>} label="Borçlar"/>
+        </nav>
+      </aside>
+
+      <main className="main-content">
+        <div className="scroll-area">
+          <header style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'32px', paddingTop:'16px'}}>
+            <div>
+              <h1 style={{fontSize:'26px', fontWeight:900, lineHeight:'1.2'}}>Finansçım</h1>
+              <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:800, letterSpacing:'1px', marginTop:'2px'}}>
+                {activeTab === 'home' ? 'ÖZET' : activeTab === 'wallet' ? 'VARLIKLARIM' : activeTab === 'history' ? 'GEÇMİŞ' : 'BORÇLAR'}
+              </p>
+            </div>
+            <button className="glass icon-circle" style={{marginTop:'4px'}}><Settings size={20} color="var(--text-dim)"/></button>
+          </header>
+
+          {activeTab === 'home' && (
+            <div className="animate-slide-up dashboard-grid">
+              <div className="balance-section">
+                <div className="balance-card glass">
+                  <p style={{color:'var(--text-dim)', fontSize:'14px', fontWeight:600}}>Net Portföy</p>
+                  <h2 style={{fontSize:'36px', fontWeight:900, marginTop:'8px'}}>₺{stats.balance}</h2>
+                  <div style={{marginTop:'20px'}}><span className="btn-text" style={{fontSize:'10px'}}>1 USD = {usdRate?.toFixed(2)} TL</span></div>
+                  <div style={{position:'absolute', right:'-20px', bottom:'-20px', opacity:0.03}}><Wallet size={160}/></div>
+                </div>
+
+                <div className="stats-grid" style={{marginTop:'16px'}}>
+                  <div className="glass stat-box" style={{flexDirection:'column', alignItems:'flex-start', gap:'8px'}}>
+                    <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                      <div className="icon-circle" style={{color:'var(--success)', width:'28px', height:'28px', borderRadius:'8px'}}><TrendingUp size={14}/></div>
+                      <span style={{fontSize:'10px', fontWeight:800, color:'var(--text-dim)', letterSpacing:'0.5px'}}>GELİR</span>
+                    </div>
+                    <span style={{fontSize:'18px', fontWeight:900, color:'var(--success)'}}>₺{stats.income}</span>
+                  </div>
+                  <div className="glass stat-box" style={{flexDirection:'column', alignItems:'flex-start', gap:'8px'}}>
+                    <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                      <div className="icon-circle" style={{color:'var(--danger)', width:'28px', height:'28px', borderRadius:'8px'}}><TrendingDown size={14}/></div>
+                      <span style={{fontSize:'10px', fontWeight:800, color:'var(--text-dim)', letterSpacing:'0.5px'}}>GİDER</span>
+                    </div>
+                    <span style={{fontSize:'18px', fontWeight:900, color:'var(--danger)'}}>₺{stats.expense}</span>
+                  </div>
+                </div>
+
+                {mounted && (
+                  <div className="glass chart-container" style={{marginTop:'16px', padding:'20px'}}>
+                    <div style={{marginBottom:'16px'}}>
+                      {/* Row 1: Title + View Mode Toggle */}
+                      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px'}}>
+                        <h4 style={{fontSize:'13px', fontWeight:900, color:'var(--text-dim)', letterSpacing:'0.5px'}}>VERİ ANALİZİ</h4>
+                        <div style={{display:'flex', background:'rgba(255,255,255,0.04)', borderRadius:'8px', padding:'2px'}}>
+                          {[{key:'chart',label:'BAKİYE'},{key:'table',label:'KAZANÇ'}].map(v => (
+                            <button 
+                              key={v.key}
+                              onClick={() => setViewMode(v.key)}
+                              style={{
+                                padding:'5px 12px', fontSize:'9px', fontWeight:800, border:'none', cursor:'pointer',
+                                background: viewMode === v.key ? 'var(--primary)' : 'transparent',
+                                color: viewMode === v.key ? '#fff' : 'var(--text-dim)',
+                                borderRadius:'6px', transition:'all 0.15s'
+                              }}
+                            >{v.label}</button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Row 2: Preset Range Pills */}
+                      <div style={{display:'flex', background:'rgba(255,255,255,0.03)', borderRadius:'8px', padding:'2px', marginBottom:'10px'}}>
+                        {[{d:7,label:'7G'},{d:14,label:'14G'},{d:30,label:'30G'},{d:90,label:'3A'},{d:180,label:'6A'},{d:365,label:'1Y'}].map(r => (
+                          <button 
+                            key={r.d} 
+                            onClick={() => { setChartRange(r.d); setCustomStart(''); setCustomEnd(''); }}
+                            style={{
+                              flex:1, padding:'5px 0', fontSize:'9px', fontWeight:800, cursor:'pointer',
+                              background: chartRange === r.d && !customStart ? 'rgba(79,135,255,0.2)' : 'transparent',
+                              color: chartRange === r.d && !customStart ? 'var(--primary)' : 'var(--text-dim)',
+                              borderRadius:'6px', border:'none', transition:'all 0.15s', textAlign:'center'
+                            }}
+                          >{r.label}</button>
+                        ))}
+                      </div>
+
+                      {/* Row 3: Custom Date Range */}
+                      <div style={{display:'flex', alignItems:'center', gap:'6px', marginBottom:'12px'}}>
+                        <Calendar size={12} color="var(--text-dim)" style={{flexShrink:0}} />
+                        <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="date-range-input" style={{flex:1}} />
+                        <span style={{color:'var(--text-dim)', fontSize:'10px', flexShrink:0}}>—</span>
+                        <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="date-range-input" style={{flex:1}} />
+                        {customStart && customEnd && (
+                          <button 
+                            onClick={() => { setCustomStart(''); setCustomEnd(''); }}
+                            style={{padding:'4px 8px', fontSize:'10px', fontWeight:800, cursor:'pointer', background:'rgba(255,77,77,0.1)', color:'var(--danger)', border:'1px solid rgba(255,77,77,0.2)', borderRadius:'6px', flexShrink:0}}
+                          >✕</button>
+                        )}
+                      </div>
+
+                      {/* Row 4: Range Totals */}
+                      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'6px'}}>
+                        <div style={{background:'rgba(16,185,129,0.06)', border:'1px solid rgba(16,185,129,0.1)', borderRadius:'8px', padding:'8px', textAlign:'center'}}>
+                          <div style={{fontSize:'8px', fontWeight:800, color:'var(--text-dim)', marginBottom:'3px', letterSpacing:'0.5px'}}>GELİR</div>
+                          <div style={{fontSize:'12px', fontWeight:900, color:'var(--success)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{rangeTotals.gelir.toLocaleString('tr-TR', {minimumFractionDigits:2})}</div>
+                        </div>
+                        <div style={{background:'rgba(255,77,77,0.06)', border:'1px solid rgba(255,77,77,0.1)', borderRadius:'8px', padding:'8px', textAlign:'center'}}>
+                          <div style={{fontSize:'8px', fontWeight:800, color:'var(--text-dim)', marginBottom:'3px', letterSpacing:'0.5px'}}>GİDER</div>
+                          <div style={{fontSize:'12px', fontWeight:900, color:'var(--danger)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{rangeTotals.gider.toLocaleString('tr-TR', {minimumFractionDigits:2})}</div>
+                        </div>
+                        <div style={{background:'rgba(79,135,255,0.06)', border:'1px solid rgba(79,135,255,0.1)', borderRadius:'8px', padding:'8px', textAlign:'center'}}>
+                          <div style={{fontSize:'8px', fontWeight:800, color:'var(--text-dim)', marginBottom:'3px', letterSpacing:'0.5px'}}>NET</div>
+                          <div style={{fontSize:'12px', fontWeight:900, color: (rangeTotals.gelir - rangeTotals.gider) >= 0 ? 'var(--success)' : 'var(--danger)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{(rangeTotals.gelir - rangeTotals.gider).toLocaleString('tr-TR', {minimumFractionDigits:2})}</div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div style={{height: '240px', width:'100%', display:'flex', justifyContent:'center'}}>
+                      {balanceHistory.length > 0 ? (
+                        viewMode === 'chart' ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={balanceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                              <defs>
+                                <linearGradient id="colorBakiye" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.3}/>
+                                  <stop offset="95%" stopColor="var(--primary)" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <XAxis 
+                                dataKey="date" 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: 'var(--text-dim)', fontSize: 10, fontWeight: 700}}
+                                dy={10}
+                              />
+                              <YAxis hide domain={['dataMin - 1000', 'dataMax + 1000']} />
+                              <Tooltip content={<CustomTooltip />} />
+                              <Area 
+                                type="monotone" 
+                                dataKey="bakiye" 
+                                stroke="var(--primary)" 
+                                strokeWidth={3}
+                                fillOpacity={1} 
+                                fill="url(#colorBakiye)" 
+                                animationDuration={800}
+                                isAnimationActive={true}
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={balanceHistory} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
+                              <XAxis 
+                                dataKey="date" 
+                                axisLine={false} 
+                                tickLine={false} 
+                                tick={{fill: 'var(--text-dim)', fontSize: 10, fontWeight: 700}}
+                                dy={10}
+                              />
+                              <YAxis hide />
+                              <Tooltip content={<CustomTooltip />} />
+                              <ReferenceLine y={0} stroke="#666" strokeWidth={1} />
+                              <Bar dataKey="net" radius={[4, 4, 0, 0]}>
+                                {balanceHistory.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={entry.net >= 0 ? 'var(--success)' : 'var(--danger)'} />
+                                ))}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        )
+                      ) : (
+                        <div style={{height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-dim)', fontSize:'12px', textAlign:'center'}}>
+                          Hesaplanıyor...
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="recent-section" style={{marginTop:'40px'}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px'}}>
+                  <h3 style={{fontSize:'18px', fontWeight:900}}>SON İŞLEMLER</h3>
+                  <button className="btn-text" style={{ cursor: 'pointer' }} onClick={() => setActiveTab('history')}>TÜMÜ</button>
+                </div>
+                <div className="transactions-list">
+                  {transactions.slice(0,6).map(tx => (
+                    <TransactionItem 
+                      key={tx.id} 
+                      tx={tx} 
+                      menuOpen={menuOpenId === tx.id}
+                      onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === tx.id ? null : tx.id) }} 
+                      onEdit={() => setEditingItem({ col: 'harcamalar', ...tx })}
+                      onDelete={() => deleteItem('harcamalar', tx.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'wallet' && (
+            <div className="animate-slide-up">
+              <div className="wallet-header" style={{ marginBottom:'24px', padding:'0 4px' }}>
+                <h3 style={{fontSize:'22px', fontWeight:900, color:'white'}}>VARLIKLARIM</h3>
+                <div style={{display:'flex', gap:'10px', flexWrap:'wrap'}}>
+                  <button className="btn-text" style={{padding:'10px 18px', fontSize:'11px', fontWeight:900}} onClick={() => setIsTransferModalOpen(true)}>🔄 TRANSFER</button>
+                  <button className="btn-text" style={{padding:'10px 18px', fontSize:'11px', fontWeight:900}} onClick={() => setIsAssetModalOpen(true)}>+ YENİ HESAP</button>
+                </div>
+              </div>
+              <div className="glass" style={{padding:'24px', marginBottom:'24px', background: 'linear-gradient(145deg, #1e1e2d 0%, #111119 100%)'}}>
+                <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'8px', marginBottom:'20px'}}>
+                  <div>
+                    <p style={{color:'var(--text-dim)', fontSize:'9px', fontWeight:800, textTransform:'uppercase'}}>Varlık</p>
+                    <h3 style={{fontSize:'15px', fontWeight:900, color:'var(--primary)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{stats.totalAssets.split(',')[0]}</h3>
+                  </div>
+                  <div style={{textAlign:'center'}}>
+                    <p style={{color:'var(--text-dim)', fontSize:'9px', fontWeight:800, textTransform:'uppercase'}}>Alacak</p>
+                    <h3 style={{fontSize:'15px', fontWeight:900, color:'var(--success)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{stats.totalReceivables.split(',')[0]}</h3>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <p style={{color:'var(--text-dim)', fontSize:'9px', fontWeight:800, textTransform:'uppercase'}}>Borç</p>
+                    <h3 style={{fontSize:'15px', fontWeight:900, color:'var(--danger)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>₺{stats.totalDebts.split(',')[0]}</h3>
+                  </div>
+                </div>
+                <div style={{height:'1px', background:'var(--border)', margin:'16px 0'}}></div>
+                <div className="flex justify-between items-center">
+                  <p style={{fontSize:'14px', fontWeight:700}}>Net Durum</p>
+                  <p style={{fontSize:'20px', fontWeight:900}}>₺{stats.balance}</p>
+                </div>
+              </div>
+              
+              <div className="list-grid">
+                {assets.map(a => (
+                  <AssetItem 
+                    key={a.id} 
+                    asset={a} 
+                    menuOpen={menuOpenId === a.id}
+                    onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === a.id ? null : a.id) }}
+                    onEdit={() => setEditingItem({ col: 'varliklar', ...a })}
+                    onDelete={() => deleteItem('varliklar', a.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'history' && (
+            <div className="animate-slide-up list-grid">
+              {transactions.map(tx => (
+                <TransactionItem 
+                  key={tx.id} 
+                  tx={tx} 
+                  menuOpen={menuOpenId === tx.id}
+                  onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === tx.id ? null : tx.id) }} 
+                  onEdit={() => setEditingItem({ col: 'harcamalar', ...tx })}
+                  onDelete={() => deleteItem('harcamalar', tx.id)}
+                />
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'debts' && (
+            <div className="animate-slide-up">
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
+                <h3 style={{fontSize:'18px', fontWeight:900}}>KREDİ KARTLARIM</h3>
+                <button className="btn-text" onClick={() => setIsCardModalOpen(true)}>+ YENİ KART</button>
+              </div>
+              <div className="list-grid" style={{marginBottom:'32px'}}>
+                {cards.map(c => (
+                  <CardItem 
+                    key={c.id} 
+                    card={c} 
+                    menuOpen={menuOpenId === c.id}
+                    onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === c.id ? null : c.id) }}
+                    onEdit={() => setEditingItem({ col: 'kredi_kartlari', ...c })}
+                    onDelete={() => deleteItem('kredi_kartlari', c.id)}
+                  />
+                ))}
+              </div>
+
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
+                <h3 style={{fontSize:'18px', fontWeight:900}}>BORÇ / ALACAK</h3>
+                <button className="btn-text" onClick={() => setIsDebtModalOpen(true)}>+ YENİ KAYIT</button>
+              </div>
+              <div className="list-grid">
+                {debts.map(d => (
+                    <DebtItem 
+                      key={d.id} 
+                      debt={d} 
+                      menuOpen={menuOpenId === d.id}
+                      onToggleMenu={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === d.id ? null : d.id) }}
+                      onEdit={() => setEditingItem({ col: 'borclar', ...d })}
+                      onDelete={() => deleteItem('borclar', d.id)}
+                      onPay={() => {
+                        setPayDebtState({ 
+                          debtId: d.id, 
+                          debtName: d.isim, 
+                          debtType: d.tip, 
+                          amount: d.miktar.toString(), 
+                          varlık: assets[0]?.ad || '' 
+                        });
+                        setIsDebtPayModalOpen(true);
+                      }}
+                    />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Add Transaction Modal */}
+        {isAddModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsAddModalOpen(false)}>
+            <div className="modal-content animate-slide-up" style={{maxHeight:'90vh', display:'flex', flexDirection:'column'}} onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px', flexShrink:0}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni İşlem Ekle</h3>
+                <button onClick={() => setIsAddModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              
+              <div style={{overflowY:'auto', paddingRight:'4px'}}>
+                <form onSubmit={handleAddTransaction} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Açıklama</label>
+                  <input className="form-input" placeholder="Market, Maaş, vb." value={newTx.açıklama} onChange={e => setNewTx({...newTx, açıklama: e.target.value})} required />
+                </div>
+                <div className="input-group">
+                  <label>Tarih</label>
+                  <input className="form-input" type="date" value={newTx.tarih} onChange={e => setNewTx({...newTx, tarih: e.target.value})} required />
+                </div>
+                <div className="flex gap-3">
+                  <div className="input-group flex-1">
+                    <label>Miktar</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newTx.fiyat} onChange={e => setNewTx({...newTx, fiyat: e.target.value})} required />
+                  </div>
+                  <div className="input-group flex-1">
+                    <label>Tür</label>
+                    <select className="form-select" value={newTx.tür} onChange={e => setNewTx({...newTx, tür: e.target.value})}>
+                      <option>Gider</option>
+                      <option>Gelir</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="input-group">
+                  <label>Kategori</label>
+                  <select className="form-select" value={newTx.kategori} onChange={e => setNewTx({...newTx, kategori: e.target.value})}>
+                    {["Market", "Yemek", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+
+                {/* Sub-items for Market */}
+                {(newTx.kategori === 'Market') && (
+                  <div className="glass" style={{padding:'16px', marginBottom:'16px', borderStyle:'dashed', borderColor:'var(--primary)'}}>
+                    <label style={{fontSize:'10px', fontWeight:800, color:'var(--primary)', marginBottom:'12px', display:'block', textTransform:'uppercase'}}>Harcama Detayları</label>
+                    <div className="flex-col gap-3">
+                      {[
+                        {id:'meyve', label:'Meyve/Sebze'},
+                        {id:'aburcubur', label:'Abur Cubur'},
+                        {id:'icecek', label:'İçecek'},
+                        {id:'et', label:'Et/Süt/Şarküteri'},
+                        {id:'temizlik', label:'Temizlik/Kişisel Bakım'},
+                        {id:'diger_gida', label:'Diğer Gıda'},
+                        {id:'diger', label:'Diğer'}
+                      ].map(item => (
+                        <div key={item.id} className="flex items-center gap-3">
+                          <span style={{fontSize:'12px', flex:1}}>{item.label}</span>
+                          <input 
+                            className="form-input" 
+                            style={{width:'100px', padding:'8px 12px'}} 
+                            type="number" 
+                            placeholder="0.00"
+                            value={newTx.detaylar?.find(d => d.id === item.id)?.miktar || ''}
+                            onChange={e => {
+                              const val = e.target.value;
+                              const currentDetaylar = [...(newTx.detaylar || [])];
+                              const index = currentDetaylar.findIndex(d => d.id === item.id);
+                              if (index > -1) {
+                                if (val === '') currentDetaylar.splice(index, 1);
+                                else currentDetaylar[index].miktar = val;
+                              } else if (val !== '') {
+                                currentDetaylar.push({ id: item.id, isim: item.label, miktar: val });
+                              }
+                              
+                              // Auto-calculate total price if details are being filled
+                              const total = currentDetaylar.reduce((sum, d) => sum + parseFloat(d.miktar || 0), 0);
+                              setNewTx({
+                                ...newTx, 
+                                detaylar: currentDetaylar,
+                                fiyat: total > 0 ? total.toString() : newTx.fiyat
+                              });
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="input-group">
+                  <label>Ödeme Yöntemi / Varlık</label>
+                  <select className="form-select" value={newTx.varlık} onChange={e => setNewTx({...newTx, varlık: e.target.value})}>
+                    <optgroup label="Hesaplar/Varlıklar">
+                      {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                    </optgroup>
+                    <optgroup label="Kredi Kartları">
+                      {cards.map(c => <option key={c.id} value={c.ad}>{c.ad}</option>)}
+                    </optgroup>
+                  </select>
+                </div>
+                
+                <div style={{display:'flex', alignItems:'center', gap:'8px', marginTop:'4px'}}>
+                  <input type="checkbox" id="bakiyeEtkilemez" checked={newTx.bakiyeEtkilemez} onChange={e => setNewTx({...newTx, bakiyeEtkilemez: e.target.checked})} style={{width:'16px', height:'16px'}} />
+                  <label htmlFor="bakiyeEtkilemez" style={{marginBottom:0, fontSize:'14px', color:'var(--text-dim)', fontWeight:600}}>Hesap Bakiyesine Etki Etmesin</label>
+                </div>
+
+                <button type="submit" className="btn-primary" style={{marginTop:'8px', marginBottom:'24px'}}>KAYDET</button>
+              </form>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {/* Add Asset Modal */}
+        {isAssetModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsAssetModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni Hesap/Varlık</h3>
+                <button onClick={() => setIsAssetModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              <form onSubmit={handleAddAsset} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Hesap Adı</label>
+                  <input className="form-input" placeholder="Ziraat, Nakit, vb." value={newAsset.ad} onChange={e => setNewAsset({...newAsset, ad: e.target.value})} required />
+                </div>
+                <div className="flex gap-3">
+                  <div className="input-group flex-1">
+                    <label>Bakiye</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newAsset.bakiye} onChange={e => setNewAsset({...newAsset, bakiye: e.target.value})} required />
+                  </div>
+                  <div className="input-group flex-1">
+                    <label>Birim</label>
+                    <select className="form-select" value={newAsset.birim} onChange={e => setNewAsset({...newAsset, birim: e.target.value})}>
+                      <option>TRY</option>
+                      <option>USD</option>
+                    </select>
+                  </div>
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>KAYDET</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Add Debt Modal */}
+        {isDebtModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsDebtModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni Borç veya Alacak</h3>
+                <button onClick={() => setIsDebtModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              <form onSubmit={handleAddDebt} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Kişi / Kurum Adı</label>
+                  <input className="form-input" placeholder="Ahmet, Banka, vb." value={newDebt.isim} onChange={e => setNewDebt({...newDebt, isim: e.target.value})} required />
+                </div>
+                <div className="flex gap-3">
+                  <div className="input-group flex-1">
+                    <label>Miktar (TRY)</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newDebt.miktar} onChange={e => setNewDebt({...newDebt, miktar: e.target.value})} required />
+                  </div>
+                  <div className="input-group flex-1">
+                    <label>Tür</label>
+                    <select className="form-select" value={newDebt.tip} onChange={e => setNewDebt({...newDebt, tip: e.target.value})}>
+                      <option>Borç</option>
+                      <option>Alacak</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="input-group">
+                  <label>Vade / Not (Opsiyonel)</label>
+                  <input className="form-input" placeholder="Ay sonu, 15 Temmuz vb." value={newDebt.vade} onChange={e => setNewDebt({...newDebt, vade: e.target.value})} />
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>KAYDET</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Add Credit Card Modal */}
+        {isCardModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsCardModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Yeni Kredi Kartı</h3>
+                <button onClick={() => setIsCardModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              <form onSubmit={handleAddCard} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Kart Adı</label>
+                  <input className="form-input" placeholder="Bonus, Axess vb." value={newCard.ad} onChange={e => setNewCard({...newCard, ad: e.target.value})} required />
+                </div>
+                <div className="input-group">
+                  <label>Kart No (Son 4 hane vb.)</label>
+                  <input className="form-input" placeholder="VISA-4242" value={newCard.kod} onChange={e => setNewCard({...newCard, kod: e.target.value})} />
+                </div>
+                <div className="flex gap-3">
+                  <div className="input-group flex-1">
+                    <label>Limit (TRY)</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newCard.limit} onChange={e => setNewCard({...newCard, limit: e.target.value})} required />
+                  </div>
+                  <div className="input-group flex-1">
+                    <label>Güncel Borç (TRY)</label>
+                    <input className="form-input" type="number" placeholder="0.00" value={newCard.güncelBorç} onChange={e => setNewCard({...newCard, güncelBorç: e.target.value})} />
+                  </div>
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>KAYDET</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Edit Modal */}
+        {editingItem && (
+          <div className="modal-overlay" onClick={() => setEditingItem(null)}>
+            <div className="modal-content animate-slide-up" style={{maxHeight:'90vh', display:'flex', flexDirection:'column'}} onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px', flexShrink:0}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Düzenle</h3>
+                <button onClick={() => setEditingItem(null)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              
+              <div style={{overflowY:'auto', paddingRight:'4px'}}>
+                <form onSubmit={handleEditItem} className="flex-col gap-4">
+                  {editingItem.ad !== undefined && (
+                    <div className="input-group">
+                      <label>Ad</label>
+                      <input className="form-input" value={editingItem.ad} onChange={e => setEditingItem({...editingItem, ad: e.target.value})} />
+                    </div>
+                  )}
+                  {editingItem.açıklama !== undefined && (
+                    <div className="input-group">
+                      <label>Açıklama</label>
+                      <input className="form-input" value={editingItem.açıklama} onChange={e => setEditingItem({...editingItem, açıklama: e.target.value})} />
+                    </div>
+                  )}
+                  {editingItem.tarih !== undefined && (
+                    <div className="input-group">
+                      <label>Tarih</label>
+                      <input 
+                        className="form-input" 
+                        type="date" 
+                        value={editingItem.selectedDate || (editingItem.tarih?.seconds ? new Date(editingItem.tarih.seconds * 1000).toISOString().split('T')[0] : '')} 
+                        onChange={e => setEditingItem({...editingItem, selectedDate: e.target.value})} 
+                      />
+                    </div>
+                  )}
+                  {editingItem.isim !== undefined && (
+                    <div className="input-group">
+                      <label>İsim</label>
+                      <input className="form-input" value={editingItem.isim} onChange={e => setEditingItem({...editingItem, isim: e.target.value})} />
+                    </div>
+                  )}
+                  {editingItem.tür !== undefined && (
+                    <div className="input-group">
+                      <label>Tür</label>
+                      <select className="form-select" value={editingItem.tür} onChange={e => setEditingItem({...editingItem, tür: e.target.value})}>
+                        <option>Gider</option>
+                        <option>Gelir</option>
+                      </select>
+                    </div>
+                  )}
+                  {editingItem.tip !== undefined && (
+                    <div className="input-group">
+                      <label>Tür</label>
+                      <select className="form-select" value={editingItem.tip} onChange={e => setEditingItem({...editingItem, tip: e.target.value})}>
+                        <option>Borç</option>
+                        <option>Alacak</option>
+                      </select>
+                    </div>
+                  )}
+                  {editingItem.kategori !== undefined && (
+                    <div className="input-group">
+                      <label>Kategori</label>
+                      <select className="form-select" value={editingItem.kategori} onChange={e => setEditingItem({...editingItem, kategori: e.target.value})}>
+                        {["Market", "Yemek", "Maaş", "Eğlence", "Fatura", "Giyim", "Ulaşım", "Ek Gelir", "Diğer"].map(c => <option key={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {editingItem.varlık !== undefined && (
+                    <div className="input-group">
+                      <label>Ödeme Yöntemi / Varlık</label>
+                      <select className="form-select" value={editingItem.varlık} onChange={e => setEditingItem({...editingItem, varlık: e.target.value})}>
+                        <optgroup label="Hesaplar/Varlıklar">
+                          {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                        </optgroup>
+                        <optgroup label="Kredi Kartları">
+                          {cards.map(c => <option key={c.id} value={c.ad}>{c.ad}</option>)}
+                        </optgroup>
+                      </select>
+                    </div>
+                  )}
+                  <div className="input-group">
+                    <label>Miktar / Bakiye / Borç / Limit</label>
+                    <input className="form-input" type="number" 
+                      value={editingItem.fiyat ?? editingItem.bakiye ?? editingItem.miktar ?? editingItem.güncelBorç ?? editingItem.limit} 
+                      onChange={e => {
+                        const val = e.target.value;
+                        if (editingItem.fiyat !== undefined) setEditingItem({...editingItem, fiyat: val});
+                        else if (editingItem.bakiye !== undefined) setEditingItem({...editingItem, bakiye: val});
+                        else if (editingItem.miktar !== undefined) setEditingItem({...editingItem, miktar: val});
+                        else if (editingItem.güncelBorç !== undefined) setEditingItem({...editingItem, güncelBorç: val});
+                        else if (editingItem.limit !== undefined) setEditingItem({...editingItem, limit: val});
+                      }} 
+                    />
+                  </div>
+                  {(editingItem.kategori === 'Market') && (
+                    <div className="glass" style={{padding:'16px', marginBottom:'16px', borderStyle:'dashed', borderColor:'var(--primary)'}}>
+                      <label style={{fontSize:'10px', fontWeight:800, color:'var(--primary)', marginBottom:'12px', display:'block', textTransform:'uppercase'}}>Harcama Detayları</label>
+                      <div className="flex-col gap-3">
+                        {[
+                          {id:'meyve', label:'Meyve/Sebze'},
+                          {id:'aburcubur', label:'Abur Cubur'},
+                          {id:'icecek', label:'İçecek'},
+                          {id:'et', label:'Et/Süt/Şarküteri'},
+                          {id:'temizlik', label:'Temizlik/Kişisel Bakım'},
+                          {id:'diger_gida', label:'Diğer Gıda'},
+                          {id:'diger', label:'Diğer'}
+                        ].map(item => (
+                          <div key={item.id} className="flex items-center gap-3">
+                            <span style={{fontSize:'12px', flex:1}}>{item.label}</span>
+                            <input 
+                              className="form-input" 
+                              style={{width:'100px', padding:'8px 12px'}} 
+                              type="number" 
+                              placeholder="0.00"
+                              value={editingItem.detaylar?.find(d => d.id === item.id)?.miktar || ''}
+                              onChange={e => {
+                                const val = e.target.value;
+                                const currentDetaylar = [...(editingItem.detaylar || [])];
+                                const index = currentDetaylar.findIndex(d => d.id === item.id);
+                                if (index > -1) {
+                                  if (val === '') currentDetaylar.splice(index, 1);
+                                  else currentDetaylar[index].miktar = val;
+                                } else if (val !== '') {
+                                  currentDetaylar.push({ id: item.id, isim: item.label, miktar: val });
+                                }
+                                
+                                const total = currentDetaylar.reduce((sum, d) => sum + parseFloat(d.miktar || 0), 0);
+                                setEditingItem({
+                                  ...editingItem, 
+                                  detaylar: currentDetaylar,
+                                  fiyat: total > 0 ? total.toString() : editingItem.fiyat
+                                });
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <button type="submit" className="btn-primary" style={{marginTop:'8px', marginBottom:'24px'}}>GÜNCELLE</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isDebtPayModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsDebtPayModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>
+                  {payDebtState.debtType === 'Borç' ? 'Borç Öde' : 'Alacak Tahsil Et'}: {payDebtState.debtName}
+                </h3>
+                <button onClick={() => setIsDebtPayModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              <form onSubmit={handlePayDebt} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>{payDebtState.debtType === 'Borç' ? 'Ödenecek Miktar' : 'Tahsil Edilecek Miktar'}</label>
+                  <input className="form-input" type="number" placeholder="0.00" value={payDebtState.amount} onChange={e => setPayDebtState({...payDebtState, amount: e.target.value})} required />
+                </div>
+                <div className="input-group">
+                  <label>Ödeme Hesabı</label>
+                  <select className="form-select" value={payDebtState.varlık} onChange={e => setPayDebtState({...payDebtState, varlık: e.target.value})} required>
+                    <option value="">Seçiniz</option>
+                    <optgroup label="Hesaplar/Varlıklar">
+                      {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                    </optgroup>
+                    <optgroup label="Kredi Kartları">
+                      {cards.map(c => <option key={c.id} value={c.ad}>{c.ad}</option>)}
+                    </optgroup>
+                  </select>
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>
+                  {payDebtState.debtType === 'Borç' ? 'ÖDEMEYİ TAMAMLA' : 'TAHSİLATI TAMAMLA'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Transfer Modal */}
+        {isTransferModalOpen && (
+          <div className="modal-overlay" onClick={() => setIsTransferModalOpen(false)}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
+                <h3 style={{fontSize:'20px', fontWeight:900}}>Hesaplar Arası Transfer</h3>
+                <button onClick={() => setIsTransferModalOpen(false)} className="glass icon-circle" style={{width:'36px', height:'36px'}}><X size={20} color="var(--text-dim)"/></button>
+              </div>
+              <form onSubmit={handleTransfer} className="flex-col gap-4">
+                <div className="input-group">
+                  <label>Gönderen Hesap</label>
+                  <select className="form-select" value={transferState.from} onChange={e => setTransferState({...transferState, from: e.target.value})} required>
+                    <option value="">Seçiniz</option>
+                    {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                  </select>
+                </div>
+                <div className="input-group">
+                  <label>Alan Hesap</label>
+                  <select className="form-select" value={transferState.to} onChange={e => setTransferState({...transferState, to: e.target.value})} required>
+                    <option value="">Seçiniz</option>
+                    {assets.map(a => <option key={a.id} value={a.ad}>{a.ad}</option>)}
+                  </select>
+                </div>
+                <div className="input-group">
+                  <label>Miktar (TRY)</label>
+                  <input className="form-input" type="number" placeholder="0.00" value={transferState.amount} onChange={e => setTransferState({...transferState, amount: e.target.value})} required />
+                </div>
+                <button type="submit" className="btn-primary" style={{marginTop:'8px'}}>TRANSFER ET</button>
+              </form>
+            </div>
+          </div>
+        )}
+        {/* Delete Confirmation Modal */}
+        {confirmDelete && (
+          <div className="modal-overlay" onClick={() => setConfirmDelete(null)} style={{zIndex: 2000}}>
+            <div className="modal-content animate-slide-up" onClick={e => e.stopPropagation()} style={{borderRadius:'32px 32px 0 0'}}>
+              <div style={{textAlign:'center', padding:'20px 0'}}>
+                <div className="icon-circle" style={{width:'64px', height:'64px', margin:'0 auto 20px', background:'rgba(255,77,77,0.1)', color:'var(--danger)'}}>
+                  <Trash2 size={32}/>
+                </div>
+                <h3 style={{fontSize:'20px', fontWeight:900, marginBottom:'12px'}}>Emin misiniz?</h3>
+                <p style={{color:'var(--text-dim)', fontSize:'14px', marginBottom:'32px'}}>
+                  <strong>"{confirmDelete.name}"</strong> silinecek. Bu işlem geri alınamaz.
+                </p>
+                <div className="flex-col gap-3">
+                  <button className="btn-primary" style={{background:'var(--danger)', boxShadow:'0 10px 20px rgba(255,77,77,0.3)'}} onClick={executeDelete}>EVET, SİL</button>
+                  <button className="btn-text" style={{padding:'16px', fontSize:'14px', background:'transparent', border:'none', color:'var(--text-dim)'}} onClick={() => setConfirmDelete(null)}>VAZGEÇ</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Bottom Nav */}
+        <nav className="bottom-nav">
+          <NavItem icon={<LayoutGrid size={24}/>} label="Özet" active={activeTab==='home'} onClick={() => setActiveTab('home')} />
+          <NavItem icon={<CardIcon size={24}/>} label="Varlık" active={activeTab==='wallet'} onClick={() => setActiveTab('wallet')} />
+          <div className="fab-container">
+            <button className="fab" onClick={() => setIsAddModalOpen(true)}><Plus size={32}/></button>
+          </div>
+          <NavItem icon={<History size={24}/>} label="İşlem" active={activeTab==='history'} onClick={() => setActiveTab('history')} />
+          <NavItem icon={<TrendingDown size={24}/>} label="Borç" active={activeTab==='debts'} onClick={() => setActiveTab('debts')} />
+        </nav>
+      </main>
+    </div>
+  );
+}
+
+function CustomTooltip({ active, payload, label }) {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div className="glass" style={{padding:'12px', border:'1px solid var(--primary)', background:'rgba(26, 26, 36, 0.95)', backdropFilter:'blur(10px)', zIndex: 10000}}>
+        <p style={{fontSize:'11px', fontWeight:800, color:'var(--text-dim)', marginBottom:'8px'}}>{data.fullDate}</p>
+        <div className="flex-col" style={{gap:'4px'}}>
+          <div style={{display:'flex', justifyContent:'space-between', gap:'20px'}}>
+            <span style={{fontSize:'12px', fontWeight:700}}>Bakiye:</span>
+            <span style={{fontSize:'12px', fontWeight:900, color:'var(--primary)'}}>₺{data.bakiye.toLocaleString("tr-TR")}</span>
+          </div>
+          {data.gelir > 0 && (
+            <div style={{display:'flex', justifyContent:'space-between', gap:'20px'}}>
+              <span style={{fontSize:'10px', fontWeight:700, color:'var(--success)'}}>Gelir:</span>
+              <span style={{fontSize:'10px', fontWeight:800, color:'var(--success)'}}>+₺{data.gelir.toLocaleString("tr-TR")}</span>
+            </div>
+          )}
+          {data.gider > 0 && (
+            <div style={{display:'flex', justifyContent:'space-between', gap:'20px'}}>
+              <span style={{fontSize:'10px', fontWeight:700, color:'var(--danger)'}}>Gider:</span>
+              <span style={{fontSize:'10px', fontWeight:800, color:'var(--danger)'}}>-₺{data.gider.toLocaleString("tr-TR")}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return null;
+}
+
+function NavItem({ icon, label, active, onClick }) {
+  return (
+    <button className={`nav-item ${active ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); onClick(); }}>
+      {icon} <span>{label}</span>
+    </button>
+  );
+}
+
+function SidebarItem({ icon, label, active, onClick }) {
+  return (
+    <button style={{
+      display:'flex', alignItems:'center', gap:'12px', padding:'12px 16px', borderRadius:'12px', border:'none',
+      background: active ? 'rgba(79, 135, 255, 0.1)' : 'transparent',
+      color: active ? 'var(--primary)' : 'var(--text-dim)',
+      fontWeight: 700, textAlign:'left', width:'100%', cursor:'pointer'
+    }} onClick={onClick}>
+      {icon} {label}
+    </button>
+  );
+}
+
+function TransactionItem({ tx, onToggleMenu, menuOpen, onEdit, onDelete }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div style={{position:'relative', marginBottom: '16px'}}>
+      <div 
+        className="list-item" 
+        onClick={() => setIsExpanded(!isExpanded)} 
+        style={{
+          alignItems: 'flex-start', 
+          padding: '16px',
+          borderRadius: isExpanded && tx.detaylar?.length > 0 ? '24px 24px 0 0' : '24px',
+          borderBottom: isExpanded && tx.detaylar?.length > 0 ? 'none' : '1px solid var(--border)',
+          marginBottom: isExpanded && tx.detaylar?.length > 0 ? '0' : '12px',
+          transition: 'all 0.2s ease',
+          background: 'var(--surface)'
+        }}
+      >
+        <div style={{display:'flex', alignItems:'flex-start', gap:'16px', flex: 1}}>
+          <div className="icon-circle" style={{
+            background: tx.tür==='Gelir' ? 'rgba(16,185,129,0.1)' : 'rgba(255,77,77,0.1)',
+            color: tx.tür==='Gelir' ? 'var(--success)' : 'var(--danger)',
+            marginTop: '2px',
+            flexShrink: 0
+          }}>
+            {tx.tür==='Gelir' ? <ArrowUpCircle size={22}/> : <ArrowDownCircle size={22}/>}
+          </div>
+          <div className="flex-col" style={{gap:'4px', overflow: 'hidden'}}>
+            <h4 style={{fontSize:'16px', fontWeight:900, lineHeight:'1.2', wordBreak: 'break-word'}}>{tx.açıklama}</h4>
+            <div className="flex-col" style={{gap:'2px'}}>
+               <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:800}}>Kategori: {tx.kategori}</p>
+               <p style={{fontSize:'10px', color:'var(--primary)', fontWeight:800}}>Hesap: {tx.varlık || '...'}</p>
+               <p style={{fontSize:'10px', color:'var(--text-dim)', fontWeight:600}}>Tarih: {tx.tarih ? new Date(tx.tarih.seconds*1000).toLocaleDateString("tr-TR") : '...'}</p>
+            </div>
+          </div>
+        </div>
+        <div style={{display:'flex', alignItems:'center', gap:'4px', marginLeft: '12px', flexShrink: 0, marginTop: '2px'}}>
+          <span style={{fontSize:'16px', fontWeight:900, color: tx.tür==='Gelir' ? 'var(--success)' : 'white', whiteSpace: 'nowrap'}}>
+            {tx.tür==='Gelir' ? '+' : '-'}₺{parseFloat(tx.fiyat || 0).toLocaleString("tr-TR")}
+          </span>
+          <button 
+            className="glass icon-circle" 
+            style={{width:'32px', height:'32px', border:'none', background:'transparent'}}
+            onClick={(e) => { e.stopPropagation(); onToggleMenu(e); }}
+          >
+            <MoreVertical size={16} color="var(--text-dim)"/>
+          </button>
+        </div>
+      </div>
+      
+      {/* Detail row - Toggleable and Merged */}
+      {isExpanded && tx.detaylar && tx.detaylar.length > 0 && (
+        <div style={{
+          padding: '4px 16px 20px 54px',
+          background: 'var(--surface)',
+          borderRadius: '0 0 24px 24px',
+          border: '1px solid var(--border)',
+          borderTop: 'none',
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '8px',
+          marginTop: '0',
+          marginBottom: '12px'
+        }}>
+          {tx.detaylar.map(d => (
+            <span key={d.id} style={{fontSize:'10px', color:'var(--text-dim)', background:'rgba(255,255,255,0.05)', padding:'4px 10px', borderRadius:'12px', fontWeight:600, border: '1px solid rgba(255,255,255,0.05)'}}>
+              {d.isim}: ₺{parseFloat(d.miktar).toLocaleString("tr-TR")}
+            </span>
+          ))}
+        </div>
+      )}
+      {menuOpen && (
+        <div className="dropdown-menu">
+          <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
+          <button className="menu-item danger" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={16}/> Sil</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssetItem({ asset, onToggleMenu, menuOpen, onEdit, onDelete }) {
+  return (
+    <div style={{position:'relative'}}>
+      <div className="list-item" onClick={onToggleMenu}>
+        <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
+          <div className="icon-circle" style={{background:'rgba(79,135,255,0.1)', color:'var(--primary)'}}><CardIcon size={22}/></div>
+          <div>
+            <h4 style={{fontSize:'15px', fontWeight:700}}>{asset.ad}</h4>
+            <p style={{fontSize:'11px', color:'var(--text-dim)', fontWeight:600}}>{asset.birim === 'TL' ? 'TRY' : asset.birim} Portföyü</p>
+          </div>
+        </div>
+        <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+          <span style={{fontSize:'18px', fontWeight:900}}>{asset.birim==='USD' ? '$' : '₺'}{parseFloat(asset.bakiye || 0).toLocaleString("tr-TR")}</span>
+          <MoreVertical size={16} color="var(--text-dim)"/>
+        </div>
+      </div>
+      {menuOpen && (
+        <div className="dropdown-menu">
+          <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
+          <button className="menu-item danger" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={16}/> Sil</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DebtItem({ debt, onToggleMenu, menuOpen, onEdit, onDelete, onPay }) {
+  const isBorc = debt.tip === 'Borç';
+  return (
+    <div style={{position:'relative'}}>
+      <div className="list-item" onClick={onToggleMenu}>
+        <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
+          <div className="icon-circle" style={{
+            background: isBorc ? 'rgba(255,77,77,0.1)' : 'rgba(16,185,129,0.1)',
+            color: isBorc ? 'var(--danger)' : 'var(--success)'
+          }}>
+            {isBorc ? <TrendingDown size={20}/> : <TrendingUp size={20}/>}
+          </div>
+          <div>
+            <h4 style={{fontSize:'15px', fontWeight:700}}>{debt.isim}</h4>
+            <p style={{fontSize:'11px', color:'var(--text-dim)', fontWeight:600}}>{debt.tip} • {debt.vade || 'Vadesiz'}</p>
+          </div>
+        </div>
+        <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+          <span style={{fontSize:'17px', fontWeight:900, color: isBorc ? 'var(--danger)' : 'var(--success)'}}>₺{parseFloat(debt.miktar || 0).toLocaleString("tr-TR")}</span>
+          <MoreVertical size={16} color="var(--text-dim)"/>
+        </div>
+      </div>
+      {menuOpen && (
+        <div className="dropdown-menu">
+          <button className="menu-item" style={{color:'var(--success)'}} onClick={(e) => { e.stopPropagation(); onPay(); }}><Wallet size={16}/> Öde/Tahsil Et</button>
+          <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
+          <button className="menu-item danger" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={16}/> Sil</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CardItem({ card, onToggleMenu, menuOpen, onEdit, onDelete }) {
+  const percentUsed = Math.min(100, (parseFloat(card.güncelBorç || 0) / parseFloat(card.limit || 1)) * 100);
+  return (
+    <div style={{position:'relative'}}>
+      <div className="list-item" onClick={onToggleMenu} style={{flexDirection:'column', alignItems:'stretch', gap:'12px'}}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+          <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
+            <div className="icon-circle" style={{background:'rgba(168,85,247,0.1)', color:'var(--secondary)'}}><CardIcon size={22}/></div>
+            <div>
+              <h4 style={{fontSize:'15px', fontWeight:700}}>{card.ad}</h4>
+              <p style={{fontSize:'11px', color:'var(--text-dim)', fontWeight:600}}>{card.kod || 'Kredi Kartı'}</p>
+            </div>
+          </div>
+          <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+            <span style={{fontSize:'17px', fontWeight:900, color: 'var(--danger)'}}>₺{parseFloat(card.güncelBorç || 0).toLocaleString("tr-TR")}</span>
+            <MoreVertical size={16} color="var(--text-dim)"/>
+          </div>
+        </div>
+        
+        <div style={{marginTop:'4px'}}>
+          <div style={{display:'flex', justifyContent:'space-between', fontSize:'9px', fontWeight:800, color:'var(--text-dim)', marginBottom:'4px', textTransform:'uppercase'}}>
+            <span>Kullanım</span>
+            <span>Limit: ₺{parseFloat(card.limit || 0).toLocaleString("tr-TR")}</span>
+          </div>
+          <div style={{height:'4px', background:'rgba(255,255,255,0.05)', borderRadius:'2px', overflow:'hidden'}}>
+            <div style={{height:'100%', width:`${percentUsed}%`, background: percentUsed > 90 ? 'var(--danger)' : 'var(--secondary)', transition:'width 0.3s'}}></div>
+          </div>
+        </div>
+      </div>
+      {menuOpen && (
+        <div className="dropdown-menu">
+          <button className="menu-item" onClick={(e) => { e.stopPropagation(); onEdit(); }}><Edit2 size={16}/> Düzenle</button>
+          <button className="menu-item danger" onClick={(e) => { e.stopPropagation(); onDelete(); }}><Trash2 size={16}/> Sil</button>
+        </div>
+      )}
+    </div>
+  );
+}
