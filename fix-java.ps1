@@ -1,9 +1,10 @@
-$files = Get-ChildItem -Recurse -Filter "*.gradle" -Path "android"
-foreach ($file in $files) {
-    $content = Get-Content $file.FullName
-    if ($content -match "VERSION_21") {
-        Write-Host "Fixing Java 21 -> 17 in $($file.FullName)"
-        $content = $content -replace "VERSION_21", "VERSION_17"
-        Set-Content $file.FullName $content
-    }
+$javaHome = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.6.7-hotspot'
+
+if (-not (Test-Path $javaHome)) {
+    throw "Java 21 not found at $javaHome"
 }
+
+$env:JAVA_HOME = $javaHome
+$env:Path = "$javaHome\bin;" + $env:Path
+
+Write-Host "Using Java 21 from $javaHome" -ForegroundColor Cyan

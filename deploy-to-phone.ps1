@@ -23,6 +23,13 @@ Set-Location ..
 
 # 5. ADB Install & Launch
 Write-Host "[5/5] Telefona yükleniyor ve başlatılıyor..." -ForegroundColor Yellow
+$connectedDevice = adb devices | Select-String "\tdevice$"
+if (-not $connectedDevice) {
+	Write-Warning "Bağlı ve yetkili bir telefon bulunamadı. APK hazır: android/app/build/outputs/apk/debug/app-debug.apk"
+	Write-Host "--- ✅ Build tamamlandı, kurulum cihaz bağlantısı bekliyor ---" -ForegroundColor Green
+	exit 0
+}
+
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 if ($LASTEXITCODE -ne 0) { Write-Error "Yükleme hatası! Telefonun bağlı olduğundan emin olun."; exit $LASTEXITCODE }
 
